@@ -63,7 +63,9 @@ public static class AdminEndpoints
             u.Id, u.Email ?? string.Empty, u.DisplayName,
             rolesByUser.TryGetValue(u.Id, out var r) ? r : [],
             u.EmailConfirmed,
-            u.LockoutEnd is { } end && end > now,
+            // Locked = disabled by an admin, or in a brute-force lockout right now; "unlock" clears both.
+            u.IsDisabled || (u.LockoutEnd is { } end && end > now),
+            u.IsDisabled,
             u.CreatedAt, u.LastLoginAt)).ToList();
 
         return Results.Ok(new { items, total });
@@ -77,9 +79,14 @@ public static class AdminEndpoints
         if (user is null)
             return Results.NotFound();
 
-        await userManager.SetLockoutEnabledAsync(user, true);
-        await userManager.SetLockoutEndDateAsync(user, DateTimeOffset.MaxValue);
-        await userManager.UpdateSecurityStampAsync(user); // existing sessions end at their next validation
+        // A distinct "disabled" state (not LockoutEnd, which a password reset clears). Rotating the
+        // security stamp ends existing sessions at their next validation and invalidates any
+        // outstanding reset/confirmation tokens.
+        user.IsDisabled = true;
+        var result = await userManager.UpdateAsync(user);
+        if (!result.Succeeded)
+            throw new InvalidOperationException("Could not disable the account: " + string.Join("; ", result.Errors.Select(e => e.Code)));
+        await userManager.UpdateSecurityStampAsync(user);
         audit.Warn("admin.user_locked", context, AuthSupport.UserId(context.User), user.Email, $"target {user.Id}");
         return Results.NoContent();
     }
@@ -90,6 +97,10 @@ public static class AdminEndpoints
         if (user is null)
             return Results.NotFound();
 
+        user.IsDisabled = false;
+        var result = await userManager.UpdateAsync(user);
+        if (!result.Succeeded)
+            throw new InvalidOperationException("Could not enable the account: " + string.Join("; ", result.Errors.Select(e => e.Code)));
         await userManager.SetLockoutEndDateAsync(user, null);
         await userManager.ResetAccessFailedCountAsync(user);
         audit.Write("admin.user_unlocked", context, AuthSupport.UserId(context.User), user.Email, $"target {user.Id}");
@@ -97,25 +108,15 @@ public static class AdminEndpoints
     }
 
     private static async Task<IResult> ResendConfirmation(
-        Guid id, HttpContext context, UserManager<AppUser> userManager, IEmailSender emailSender, AuditLog audit, ILogger<AccountService> logger, CancellationToken ct)
+        Guid id, HttpContext context, UserManager<AppUser> userManager, IAccountEmailQueue emails, AuditLog audit)
     {
         var user = await userManager.FindByIdAsync(id.ToString());
         if (user is null)
             return Results.NotFound();
 
-        if (!user.EmailConfirmed)
+        if (!user.EmailConfirmed && !user.IsDisabled)
         {
-            var token = AuthSupport.EncodeToken(await userManager.GenerateEmailConfirmationTokenAsync(user));
-            var url = $"{AuthSupport.PublicBaseUrl(context)}/confirm-email?userId={user.Id}&token={token}";
-            var content = EmailTemplates.ConfirmEmail(user.DisplayName, url);
-            try
-            {
-                await emailSender.SendAsync(user.Email!, content.Subject, content.HtmlBody, ct);
-            }
-            catch (Exception ex) when (!ct.IsCancellationRequested)
-            {
-                logger.LogError(ex, "Could not send confirmation email for user {UserId}", user.Id);
-            }
+            await AuthEndpoints.QueueConfirmationAsync(context, userManager, emails, user);
             audit.Write("admin.confirmation_resent", context, AuthSupport.UserId(context.User), user.Email, $"target {user.Id}");
         }
         return Results.NoContent();

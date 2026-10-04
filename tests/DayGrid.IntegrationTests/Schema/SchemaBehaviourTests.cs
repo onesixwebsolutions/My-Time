@@ -42,7 +42,7 @@ public class SchemaMigratorTests : IntegrationTestBase
     public void EmbeddedMigrations_AreOrdered_StartAtBaseline_AndIncludeAuth()
     {
         var versions = AllVersions;
-        Assert.Equal(new[] { "0001", "0002" }, versions);
+        Assert.Equal(new[] { "0001", "0002", "0003" }, versions);
         Assert.Contains("CREATE TABLE users", SchemaMigrator.LoadEmbedded()[1].Sql);
     }
 
@@ -64,7 +64,7 @@ public class SchemaMigratorTests : IntegrationTestBase
             Assert.Empty(await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
             Assert.Equal(ExpectedTableCount, await ScalarAsync(cs, CountTables));
             Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM simple_tasks"));
-            Assert.Equal(2, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
+            Assert.Equal(AllVersions.Count, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
         }
         finally
         {
@@ -80,7 +80,7 @@ public class SchemaMigratorTests : IntegrationTestBase
         {
             var runs = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => SchemaMigrator.MigrateAsync(cs, NullLogger.Instance))));
             Assert.Equal(AllVersions, runs.SelectMany(r => r).OrderBy(v => v));
-            Assert.Equal(2, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
+            Assert.Equal(AllVersions.Count, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
         }
         finally
         {
@@ -95,7 +95,7 @@ public class SchemaMigratorTests : IntegrationTestBase
         try
         {
             var real = SchemaMigrator.LoadEmbedded();
-            var broken = new[] { real[0], real[1] with { Sql = real[1].Sql + "\nSELECT this_is_not_valid_sql(;\n" } };
+            var broken = new[] { real[0], real[1] with { Sql = real[1].Sql + "\nSELECT this_is_not_valid_sql(;\n" }, real[2] };
 
             await Assert.ThrowsAsync<PostgresException>(() => SchemaMigrator.MigrateAsync(cs, broken, NullLogger.Instance));
 
@@ -105,7 +105,7 @@ public class SchemaMigratorTests : IntegrationTestBase
             Assert.Equal(0, await ScalarAsync(cs, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'checklists' AND column_name = 'user_id'"));
 
             // ...and the real migration applies cleanly afterwards.
-            Assert.Equal(new[] { "0002" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Equal(new[] { "0002", "0003" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
         }
         finally
         {
@@ -128,11 +128,38 @@ public class SchemaMigratorTests : IntegrationTestBase
             var checklists = await ScalarAsync(cs, "SELECT count(*) FROM checklists");
             Assert.True(checklists > 0);
 
-            Assert.Equal(new[] { "0002" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Equal(new[] { "0002", "0003" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
 
             Assert.Equal(AllVersions, await SchemaMigrator.GetAppliedVersionsAsync(cs));
             Assert.Equal(checklists, await ScalarAsync(cs, "SELECT count(*) FROM checklists WHERE user_id IS NULL"));
             Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM app_settings WHERE user_id IS NULL"));
+        }
+        finally
+        {
+            await Fx.DropDatabaseAsync(cs);
+        }
+    }
+
+    [Fact]
+    public async Task Migration0003_CarriesExistingAdminLocksOverToIsDisabled()
+    {
+        var cs = await Fx.CreateEmptyDatabaseAsync("mig3");
+        try
+        {
+            var real = SchemaMigrator.LoadEmbedded();
+            Assert.Equal(new[] { "0001", "0002" }, await SchemaMigrator.MigrateAsync(cs, real.Take(2).ToList(), NullLogger.Instance));
+            // An admin lock written by the previous build (LockoutEnd = DateTimeOffset.MaxValue), a
+            // brute-force lockout and a normal account.
+            await ExecuteAsync(cs,
+                "INSERT INTO users (id, display_name, lockout_end) VALUES " +
+                "('00000000-0000-0000-0000-000000000001', 'admin-locked', '9999-12-31 23:59:59.999999+00'), " +
+                "('00000000-0000-0000-0000-000000000002', 'brute-forced', now() + interval '15 minutes'), " +
+                "('00000000-0000-0000-0000-000000000003', 'normal', NULL)");
+
+            Assert.Equal(new[] { "0003" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+
+            Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM users WHERE is_disabled"));
+            Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM users WHERE is_disabled AND display_name = 'admin-locked'"));
         }
         finally
         {

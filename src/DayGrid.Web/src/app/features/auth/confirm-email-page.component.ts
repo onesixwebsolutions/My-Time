@@ -1,24 +1,53 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { NonNullableFormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { RouterLink } from '@angular/router';
 
 import { commonErrorMessage, toApiProblem } from '../../core/auth/api-problem';
 import { AuthService } from '../../core/auth/auth.service';
+import { EmailLinkService } from '../../core/auth/email-link.service';
 import { controlError } from '../../shared/forms/form-errors';
+import { PasswordInputComponent } from '../../shared/forms/password-input.component';
 import { UI } from '../../shared/forms/ui-classes';
 
-type State = 'confirming' | 'success' | 'failed';
+type State = 'password' | 'success' | 'failed';
 
-/** Landing page for the email verification link: /confirm-email?userId=&token= */
+/**
+ * Landing page for the email verification link: /confirm-email#userId=&token= (older links:
+ * ?userId=&token=). The token is removed from the address bar as soon as it has been read. The
+ * account password is asked for before confirming, so whoever registered an address they do not
+ * own cannot get its owner to activate their account by clicking the link.
+ */
 @Component({
   selector: 'app-confirm-email-page',
   standalone: true,
-  imports: [ReactiveFormsModule, RouterLink],
+  imports: [ReactiveFormsModule, RouterLink, PasswordInputComponent],
   template: `
     @switch (state()) {
-      @case ('confirming') {
-        <h1 class="text-[20px] font-bold tracking-tight text-text">Confirming your email…</h1>
-        <p class="mt-2 text-[13px] text-muted" role="status">Hang on a moment.</p>
+      @case ('password') {
+        <h1 class="text-[20px] font-bold tracking-tight text-text">Confirm your email</h1>
+        <p class="mb-5 mt-2 text-[13px] text-muted">Enter the password you chose when you created your account.</p>
+
+        @if (error()) {
+          <div [class]="ui.errorBanner + ' mb-4'" role="alert">{{ error() }}</div>
+        }
+
+        <form [formGroup]="passwordForm" (ngSubmit)="confirm()" novalidate class="space-y-4">
+          <div>
+            <app-password-input
+              [control]="passwordForm.controls.password"
+              inputId="confirm-password"
+              label="Password"
+              autocomplete="current-password"
+              [error]="passwordError()"
+            />
+          </div>
+          <button type="submit" [disabled]="pending()" [class]="ui.primary + ' w-full'">
+            {{ pending() ? 'Confirming…' : 'Confirm email' }}
+          </button>
+        </form>
+        <p class="mt-5 text-center text-[12.8px] text-muted">
+          Don't know this password? <a routerLink="/forgot-password" [class]="ui.link">Reset it</a> — that confirms your email too.
+        </p>
       }
       @case ('success') {
         <h1 class="text-[20px] font-bold tracking-tight text-text">Email confirmed</h1>
@@ -70,42 +99,71 @@ type State = 'confirming' | 'success' | 'failed';
 })
 export class ConfirmEmailPageComponent implements OnInit {
   private readonly auth = inject(AuthService);
-  private readonly route = inject(ActivatedRoute);
+  private readonly links = inject(EmailLinkService);
+  private readonly fb = inject(NonNullableFormBuilder);
 
   protected readonly ui = UI;
-  protected readonly state = signal<State>('confirming');
+  protected readonly state = signal<State>('password');
   protected readonly failure = signal('This verification link is invalid or has expired.');
+  protected readonly error = signal<string | null>(null);
   protected readonly pending = signal(false);
   protected readonly submitted = signal(false);
+  protected readonly passwordSubmitted = signal(false);
   protected readonly resent = signal(false);
   protected readonly resendError = signal<string | null>(null);
-  protected readonly form = inject(NonNullableFormBuilder).group({
+  protected readonly passwordForm = this.fb.group({ password: ['', Validators.required] });
+  protected readonly form = this.fb.group({
     email: ['', [Validators.required, Validators.email]]
   });
 
+  private userId = '';
+  private token = '';
+
   ngOnInit(): void {
-    const params = this.route.snapshot.queryParamMap;
-    const userId = params.get('userId');
-    const token = params.get('token');
-    if (!userId || !token) {
+    const params = this.links.take(['userId', 'token']);
+    this.userId = params['userId'] ?? '';
+    this.token = params['token'] ?? '';
+    if (!this.userId || !this.token) {
       this.failure.set('This verification link is incomplete.');
       this.state.set('failed');
-      return;
     }
-    this.auth.confirmEmail(userId, token).subscribe({
-      next: () => this.state.set('success'),
-      error: (err: unknown) => {
-        const problem = toApiProblem(err);
-        if (problem.code !== 'invalid_token' && problem.status !== 400) {
-          this.failure.set(commonErrorMessage(problem));
-        }
-        this.state.set('failed');
-      }
-    });
+  }
+
+  protected passwordError(): string | null {
+    return controlError(this.passwordForm.controls.password, 'Password', this.passwordSubmitted());
   }
 
   protected emailError(): string | null {
     return controlError(this.form.controls.email, 'Email', this.submitted());
+  }
+
+  confirm(): void {
+    this.passwordSubmitted.set(true);
+    if (this.passwordForm.invalid || this.pending()) {
+      this.passwordForm.markAllAsTouched();
+      return;
+    }
+    this.pending.set(true);
+    this.error.set(null);
+    this.auth.confirmEmail(this.userId, this.token, this.passwordForm.controls.password.value).subscribe({
+      next: () => {
+        this.pending.set(false);
+        this.state.set('success');
+      },
+      error: (err: unknown) => {
+        this.pending.set(false);
+        const problem = toApiProblem(err);
+        if (problem.code === 'invalid_credentials') {
+          this.error.set('That password is not correct for this account.');
+        } else if (problem.code === 'locked_out') {
+          this.error.set('Too many wrong passwords. Try again in a few minutes, or reset your password.');
+        } else if (problem.code === 'invalid_token' || problem.status === 400) {
+          this.state.set('failed');
+        } else {
+          this.error.set(commonErrorMessage(problem));
+        }
+      }
+    });
   }
 
   resend(): void {

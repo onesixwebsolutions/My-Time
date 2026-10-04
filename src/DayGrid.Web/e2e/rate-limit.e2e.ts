@@ -9,7 +9,8 @@ test.use({ storageState: { cookies: [], origins: [] } });
 test('11 rapid wrong sign-ins → "too many attempts" with the Retry-After seconds', async ({ page, guard }) => {
   guard.allowApiError('/api/v1/auth/login', 401);
   guard.allowApiError('/api/v1/auth/login', 429);
-  // An unknown address, so the per-account lockout (5 failures) never kicks in first.
+  // An unknown address. It is "locked out" after 5 failures exactly like a real account (so
+  // locked_out cannot reveal which addresses have accounts); the rate limit is separate.
   const email = `nobody-${Date.now()}@e2e.test`;
 
   await page.goto('/login');
@@ -17,7 +18,9 @@ test('11 rapid wrong sign-ins → "too many attempts" with the Retry-After secon
     const response = page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/login'));
     await submitLogin(page, email, `wrong password ${attempt}`);
     expect((await response).status(), `attempt ${attempt}`).toBe(401);
-    await expect(page.getByTestId('login-error')).toContainText('Incorrect email or password.');
+    await expect(page.getByTestId('login-error')).toContainText(
+      attempt < 5 ? 'Incorrect email or password.' : 'Too many failed sign-in attempts.'
+    );
   }
 
   const response = page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/login'));

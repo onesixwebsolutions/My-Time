@@ -16,6 +16,7 @@ function adminUser(overrides: Partial<AdminUserDto>): AdminUserDto {
     roles: ['User'],
     emailConfirmed: true,
     lockedOut: false,
+    disabled: false,
     createdAt: '2026-01-01T00:00:00Z',
     lastLoginAt: null,
     ...overrides
@@ -30,7 +31,7 @@ describe('AdminUsersPageComponent', () => {
   const users = [
     adminUser({ id: 'me', email: 'admin@example.com', roles: ['User', 'Admin'] }),
     adminUser({ id: 'u2', email: 'bob@example.com', emailConfirmed: false }),
-    adminUser({ id: 'u3', email: 'eve@example.com', lockedOut: true })
+    adminUser({ id: 'u3', email: 'eve@example.com', lockedOut: true, disabled: true })
   ];
 
   beforeEach(() => {

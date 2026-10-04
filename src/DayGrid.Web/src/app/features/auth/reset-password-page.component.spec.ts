@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 
-import { routeWithQuery, submitForm, typeInto } from '../../testing/auth-testing';
+import { emailLinkWith, provideEmailLink, submitForm, typeInto } from '../../testing/auth-testing';
 import { ResetPasswordPageComponent } from './reset-password-page.component';
 
 describe('ResetPasswordPageComponent', () => {
@@ -12,10 +12,13 @@ describe('ResetPasswordPageComponent', () => {
   let http: HttpTestingController;
   let navigate: jasmine.Spy;
 
+  let link: ReturnType<typeof emailLinkWith>;
+
   function create(query: Record<string, string> = { email: 'ada@example.com', token: 'tok-123' }) {
+    link = emailLinkWith(query);
     TestBed.configureTestingModule({
       imports: [ResetPasswordPageComponent],
-      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting(), routeWithQuery(query)]
+      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting(), provideEmailLink(link)]
     });
     http = TestBed.inject(HttpTestingController);
     navigate = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
@@ -42,6 +45,7 @@ describe('ResetPasswordPageComponent', () => {
 
   it('posts email, token and new password, then goes to login', () => {
     create();
+    expect(link.take).toHaveBeenCalledOnceWith(['email', 'token']);
     fill('a long passphrase', 'a long passphrase');
     const req = http.expectOne('/api/v1/auth/reset-password');
     expect(req.request.body).toEqual({ email: 'ada@example.com', token: 'tok-123', newPassword: 'a long passphrase' });

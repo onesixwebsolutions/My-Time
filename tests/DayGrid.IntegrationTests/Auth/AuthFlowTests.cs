@@ -35,8 +35,8 @@ public class AuthFlowTests : IntegrationTestBase
         var email = TestAccounts.NewEmail("bob");
         (await session.PrimeAsync()).Dispose();
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/register", new { email, password, displayName }));
-        var (userId, token) = TestAccounts.ExtractLink(Fx.Factory.Email, email, "confirm-email");
-        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token }));
+        var (userId, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, email, "confirm-email");
+        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password }));
         return (session, email, Guid.Parse(userId));
     }
 
@@ -63,16 +63,29 @@ public class AuthFlowTests : IntegrationTestBase
         var wrong = await session.LoginAsync(email, GoodPassword + "x");
         Assert.Equal("invalid_credentials", await CodeAsync(wrong));
 
-        // Confirmation link: {PublicBaseUrl}/confirm-email?userId=..&token=<base64url>
+        // Confirmation link: {PublicBaseUrl}/confirm-email#userId=..&token=<base64url> — the token
+        // is in the fragment (never sent to a server, so never in access logs), not the query.
+        var (userId, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, email, "confirm-email");
         var mail = Assert.Single(Fx.Factory.Email.SentTo(email));
-        Assert.Contains("https://daygrid.test/confirm-email?userId=", WebUtility.HtmlDecode(mail.Body));
-        var (userId, token) = TestAccounts.ExtractLink(Fx.Factory.Email, email, "confirm-email");
+        Assert.Contains("https://daygrid.test/confirm-email#userId=", WebUtility.HtmlDecode(mail.Body));
+        Assert.DoesNotContain("?userId=", mail.Body);
+        Assert.DoesNotContain("Flow User", mail.Body); // no attacker-controllable name before confirmation
 
-        var badConfirm = await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token = token[..^4] + "AAAA" });
+        var badConfirm = await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token = token[..^4] + "AAAA", password = GoodPassword });
         Assert.Equal(HttpStatusCode.BadRequest, badConfirm.StatusCode);
         Assert.Equal("invalid_token", await CodeAsync(badConfirm));
-        Assert.Equal("invalid_token", await CodeAsync(await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId = Guid.NewGuid(), token })));
-        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token }));
+        Assert.Equal("invalid_token", await CodeAsync(await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId = Guid.NewGuid(), token, password = GoodPassword })));
+
+        // The account password is required too (pre-registration hijack): a wrong or missing
+        // password is refused and does not use the token up.
+        var wrongPassword = await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password = "not the password" });
+        Assert.Equal(HttpStatusCode.BadRequest, wrongPassword.StatusCode);
+        Assert.Equal("invalid_credentials", await CodeAsync(wrongPassword));
+        Assert.Equal("invalid_credentials", await CodeAsync(await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token })));
+        Assert.Equal("email_not_confirmed", await CodeAsync(await session.LoginAsync(email, GoodPassword)));
+        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password = GoodPassword }));
+        // Confirmation rotates the security stamp: the link is single-use.
+        Assert.Equal("invalid_token", await CodeAsync(await session.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password = GoodPassword })));
 
         var login = await session.LoginAsync(email, GoodPassword);
         await AssertStatusAsync(HttpStatusCode.OK, login);
@@ -135,6 +148,7 @@ public class AuthFlowTests : IntegrationTestBase
         }
 
         Assert.Equal(before, await CountUsersAsync());
+        await Fx.Factory.Email.SettleAsync();
         var notices = Fx.Factory.Email.SentTo(UserEmail);
         Assert.Equal(2, notices.Count);
         Assert.All(notices, n => Assert.Equal("You already have a DayGrid account", n.Subject));
@@ -153,19 +167,22 @@ public class AuthFlowTests : IntegrationTestBase
             await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/resend-confirmation", body));
             await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/forgot-password", body));
         }
+        await Fx.Factory.Email.SettleAsync();
         Assert.Empty(Fx.Factory.Email.Sent);
 
         // Confirmed account: resend sends nothing, forgot-password sends a reset link.
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/resend-confirmation", new { email = UserEmail }));
+        await Fx.Factory.Email.SettleAsync();
         Assert.Empty(Fx.Factory.Email.Sent);
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/forgot-password", new { email = UserEmail }));
-        var (linkEmail, _) = TestAccounts.ExtractLink(Fx.Factory.Email, UserEmail, "reset-password");
+        var (linkEmail, _) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, UserEmail, "reset-password");
         Assert.Equal(UserEmail, linkEmail);
 
         // Unconfirmed account: resend sends a fresh confirmation link.
         var pending = TestAccounts.NewEmail("pending");
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/register", new { email = pending, password = GoodPassword, displayName = "P" }));
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/resend-confirmation", new { email = pending }));
+        await Fx.Factory.Email.SettleAsync();
         Assert.Equal(2, Fx.Factory.Email.SentTo(pending).Count(m => m.Body.Contains("confirm-email", StringComparison.Ordinal)));
     }
 
@@ -280,6 +297,7 @@ public class AuthFlowTests : IntegrationTestBase
         using var fresh = NewSession();
         Assert.Equal("invalid_credentials", await CodeAsync(await fresh.LoginAsync(UserEmail, TestAccounts.Password)));
         await AssertStatusAsync(HttpStatusCode.OK, await fresh.LoginAsync(UserEmail, GoodPassword));
+        await Fx.Factory.Email.SettleAsync();
         Assert.Contains(Fx.Factory.Email.SentTo(UserEmail), m => m.Subject == "Your DayGrid password was changed");
     }
 
@@ -289,7 +307,7 @@ public class AuthFlowTests : IntegrationTestBase
         using var anonymous = NewSession();
         (await anonymous.PrimeAsync()).Dispose();
         await AssertStatusAsync(HttpStatusCode.Accepted, await anonymous.Client.PostAsJsonAsync($"{Auth}/forgot-password", new { email = UserEmail }));
-        var (email, token) = TestAccounts.ExtractLink(Fx.Factory.Email, UserEmail, "reset-password");
+        var (email, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, UserEmail, "reset-password");
 
         var bad = await anonymous.Client.PostAsJsonAsync($"{Auth}/reset-password", new { email, token = "bm90LWEtdG9rZW4", newPassword = GoodPassword });
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
@@ -318,7 +336,7 @@ public class AuthFlowTests : IntegrationTestBase
         Assert.Equal("locked_out", await CodeAsync(await session.LoginAsync(UserEmail, TestAccounts.Password)));
 
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/forgot-password", new { email = UserEmail }));
-        var (email, token) = TestAccounts.ExtractLink(Fx.Factory.Email, UserEmail, "reset-password");
+        var (email, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, UserEmail, "reset-password");
         await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync($"{Auth}/reset-password", new { email, token, newPassword = GoodPassword }));
         await AssertStatusAsync(HttpStatusCode.OK, await session.LoginAsync(UserEmail, GoodPassword));
     }
@@ -380,6 +398,121 @@ public class AuthFlowTests : IntegrationTestBase
         await AssertNoRowsLeftAsync(userId);
         // The default user's data is untouched.
         await AssertStatusAsync(HttpStatusCode.OK, await Client.GetAsync("/api/v1/settings"));
+    }
+
+    // ------------------------------------------------------------------ account enumeration
+
+    /// <summary>Status + body with the per-request traceId removed.</summary>
+    private static async Task<string> ShapeAsync(HttpResponseMessage response)
+    {
+        var json = await TestAccounts.JsonAsync(response);
+        var props = json.ValueKind == JsonValueKind.Object
+            ? json.EnumerateObject().Where(p => p.Name != "traceId").Select(p => $"{p.Name}={p.Value.GetRawText()}")
+            : [json.GetRawText()];
+        return $"{(int)response.StatusCode} {{{string.Join(",", props)}}}";
+    }
+
+    [Fact]
+    public async Task Register_Login_Forgot_Resend_AnswerIdentically_ForExistingAndUnknownEmails()
+    {
+        using var session = NewSession();
+        (await session.PrimeAsync()).Dispose();
+        var pending = TestAccounts.NewEmail("pending");
+        await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync($"{Auth}/register", new { email = pending, password = GoodPassword, displayName = "P" }));
+
+        foreach (var existing in new[] { UserEmail, pending }) // confirmed and unconfirmed accounts
+        {
+            var unknown = TestAccounts.NewEmail("ghost");
+            async Task<(string Existing, string Unknown)> Both(Func<string, Task<HttpResponseMessage>> call) =>
+                (await ShapeAsync(await call(existing)), await ShapeAsync(await call(unknown)));
+
+            var register = await Both(e => session.Client.PostAsJsonAsync($"{Auth}/register", new { email = e, password = GoodPassword, displayName = "X" }));
+            Assert.Equal(register.Unknown, register.Existing);
+            Assert.Equal("202 {}", register.Existing);
+
+            var forgot = await Both(e => session.Client.PostAsJsonAsync($"{Auth}/forgot-password", new { email = e }));
+            Assert.Equal(forgot.Unknown, forgot.Existing);
+            var resend = await Both(e => session.Client.PostAsJsonAsync($"{Auth}/resend-confirmation", new { email = e }));
+            Assert.Equal(resend.Unknown, resend.Existing);
+
+            var login = await Both(e => session.LoginAsync(e, "a wrong password!"));
+            Assert.Equal(login.Unknown, login.Existing);
+            Assert.StartsWith("401 ", login.Existing);
+        }
+    }
+
+    [Fact]
+    public async Task Lockout_UnknownEmailsLockAfterTheSameNumberOfFailures_WithAnIdenticalResponse()
+    {
+        using var session = NewSession();
+        var unknown = TestAccounts.NewEmail("ghost");
+        var real = new List<string>();
+        var ghost = new List<string>();
+        for (var i = 0; i < 6; i++)
+        {
+            real.Add(await ShapeAsync(await session.LoginAsync(UserEmail, "wrong password " + i)));
+            ghost.Add(await ShapeAsync(await session.LoginAsync(unknown, "wrong password " + i)));
+        }
+
+        Assert.Equal(real, ghost);
+        Assert.Contains("\"invalid_credentials\"", real[3]);
+        Assert.Contains("\"locked_out\"", real[4]);
+        Assert.Contains("\"locked_out\"", real[5]);
+        // Locked means locked: the right password does not help either account.
+        Assert.Equal(await ShapeAsync(await session.LoginAsync(UserEmail, TestAccounts.Password)),
+                     await ShapeAsync(await session.LoginAsync(unknown, TestAccounts.Password)));
+    }
+
+    // ------------------------------------------------------------------ pre-registration hijack
+
+    [Fact]
+    public async Task PreRegisteredAddress_TheRealOwnerCannotBeTrickedIntoConfirmingIt_ButCanRecoverItByPasswordReset()
+    {
+        // An attacker registers the victim's address with a password only the attacker knows.
+        using var attacker = NewSession();
+        (await attacker.PrimeAsync()).Dispose();
+        var victim = TestAccounts.NewEmail("victim");
+        const string attackerPassword = "attacker chosen passphrase";
+        await AssertStatusAsync(HttpStatusCode.Accepted, await attacker.Client.PostAsJsonAsync($"{Auth}/register", new { email = victim, password = attackerPassword, displayName = "<b>Your bank</b>" }));
+        var (userId, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, victim, "confirm-email");
+        Assert.DoesNotContain("Your bank", Fx.Factory.Email.SentTo(victim).Single().Body);
+
+        // The victim clicks the link but (not knowing the attacker's password) cannot confirm.
+        using var owner = NewSession();
+        (await owner.PrimeAsync()).Dispose();
+        Assert.Equal("invalid_credentials", await CodeAsync(await owner.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password = "the victim's own guess" })));
+
+        // Forgot-password works for the unconfirmed account; resetting proves the mailbox and confirms it.
+        await AssertStatusAsync(HttpStatusCode.Accepted, await owner.Client.PostAsJsonAsync($"{Auth}/forgot-password", new { email = victim }));
+        var (resetEmail, resetToken) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, victim, "reset-password");
+        Assert.DoesNotContain("Your bank", Fx.Factory.Email.SentTo(victim).Last().Body);
+        await AssertStatusAsync(HttpStatusCode.NoContent, await owner.Client.PostAsJsonAsync($"{Auth}/reset-password", new { email = resetEmail, token = resetToken, newPassword = GoodPassword }));
+
+        Assert.Equal("invalid_credentials", await CodeAsync(await attacker.LoginAsync(victim, attackerPassword)));
+        Assert.Equal("invalid_token", await CodeAsync(await attacker.Client.PostAsJsonAsync($"{Auth}/confirm-email", new { userId, token, password = attackerPassword })));
+        var login = await owner.LoginAsync(victim, GoodPassword);
+        await AssertStatusAsync(HttpStatusCode.OK, login);
+        Assert.True((await TestAccounts.JsonAsync(login)).GetProperty("emailConfirmed").GetBoolean());
+    }
+
+    // ------------------------------------------------------------------ logout
+
+    [Fact]
+    public async Task Logout_RotatesTheSecurityStamp_SoACopiedCookieStopsWorking()
+    {
+        using var other = NewSession();
+        await other.LoginOrThrowAsync(UserEmail, TestAccounts.Password);
+        // A stolen copy of the session cookie.
+        using var thief = NewSession();
+        foreach (System.Net.Cookie cookie in other.Cookies.GetCookies(TestSession.BaseAddress))
+            thief.Cookies.Add(TestSession.BaseAddress, new System.Net.Cookie(cookie.Name, cookie.Value, cookie.Path));
+        await AssertStatusAsync(HttpStatusCode.OK, await thief.Client.GetAsync("/api/v1/tasks"));
+
+        await AssertStatusAsync(HttpStatusCode.NoContent, await other.Client.PostAsync($"{Auth}/logout", null));
+
+        await AssertStatusAsync(HttpStatusCode.Unauthorized, await thief.Client.GetAsync("/api/v1/tasks"));
+        // Documented trade-off: every session of that user ends, including the default one.
+        await AssertStatusAsync(HttpStatusCode.Unauthorized, await Client.GetAsync("/api/v1/tasks"));
     }
 
     // ------------------------------------------------------------------ helpers shared with AdminTests

@@ -17,7 +17,7 @@ public static class SeedData
     {
         // Idempotent: never overwrite existing data, whether that's a previous seed run or
         // real usage — and never once an account exists. Rows are inserted unowned (legacy), so
-        // the first account to register claims them. Pass a system (unfiltered) context.
+        // the bootstrap admin claims them when it confirms its email (see BootstrapAdminPolicy). Pass a system (unfiltered) context.
         if (db.Users.Any()
             || db.Checklists.IgnoreQueryFilters().Any()
             || db.TimetableTemplates.IgnoreQueryFilters().Any())

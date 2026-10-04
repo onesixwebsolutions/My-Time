@@ -45,5 +45,8 @@ public sealed record ReorderItem
 /// as `{ "items": [...] }` so the request has a stable root object.</summary>
 public sealed record ReorderRequest
 {
+    /// <summary>Most entries one reorder request may carry (request-size / DoS cap).</summary>
+    public const int MaxItems = 500;
+
     public List<ReorderItem> Items { get; init; } = new();
 }

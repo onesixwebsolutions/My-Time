@@ -36,7 +36,7 @@ const PUBLIC_PAGES = [
   '/register',
   '/register/check-email?email=someone%40e2e.test',
   '/forgot-password',
-  '/reset-password?email=someone%40e2e.test&token=abc',
+  '/reset-password#email=someone%40e2e.test&token=abc',
   '/confirm-email'
 ];
 

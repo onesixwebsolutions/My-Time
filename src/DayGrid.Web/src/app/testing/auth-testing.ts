@@ -5,6 +5,7 @@ import { Subject, of } from 'rxjs';
 
 import { UserDto } from '../core/auth/auth.models';
 import { AuthService } from '../core/auth/auth.service';
+import { EmailLinkService } from '../core/auth/email-link.service';
 
 export function makeUser(overrides: Partial<UserDto> = {}): UserDto {
   return {
@@ -56,6 +57,18 @@ export function routeWithQuery(params: Record<string, string>): Provider {
     provide: ActivatedRoute,
     useValue: { snapshot: { queryParamMap: convertToParamMap(params), paramMap: convertToParamMap({}) } }
   };
+}
+
+/** EmailLinkService stand-in: the parameters of the emailed link (fragment/query) the page reads. */
+export function emailLinkWith(params: Record<string, string>) {
+  const take = jasmine.createSpy('take').and.callFake((names: readonly string[]) =>
+    Object.fromEntries(names.map((n) => [n, params[n] ?? null]))
+  );
+  return { take };
+}
+
+export function provideEmailLink(fake: ReturnType<typeof emailLinkWith>): Provider {
+  return { provide: EmailLinkService, useValue: fake };
 }
 
 export function problem(status: number, body: Record<string, unknown> = {}, headers: Record<string, string> = {}) {

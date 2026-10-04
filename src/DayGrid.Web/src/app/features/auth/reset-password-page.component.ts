@@ -1,14 +1,16 @@
 import { Component, inject, signal } from '@angular/core';
 import { NonNullableFormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
 import { commonErrorMessage, toApiProblem } from '../../core/auth/api-problem';
 import { AuthService } from '../../core/auth/auth.service';
+import { EmailLinkService } from '../../core/auth/email-link.service';
 import { applyServerErrors, controlError, matchValidator, passwordValidators } from '../../shared/forms/form-errors';
 import { PasswordInputComponent } from '../../shared/forms/password-input.component';
 import { UI } from '../../shared/forms/ui-classes';
 
-/** Landing page for the reset link: /reset-password?email=&token= */
+/** Landing page for the reset link: /reset-password#email=&token= (older links: ?email=&token=).
+ * The token is removed from the address bar as soon as it has been read. */
 @Component({
   selector: 'app-reset-password-page',
   standalone: true,
@@ -64,11 +66,11 @@ import { UI } from '../../shared/forms/ui-classes';
 export class ResetPasswordPageComponent {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
-  private readonly params = inject(ActivatedRoute).snapshot.queryParamMap;
+  private readonly params = inject(EmailLinkService).take(['email', 'token']);
 
   protected readonly ui = UI;
-  protected readonly email = this.params.get('email') ?? '';
-  private readonly token = this.params.get('token') ?? '';
+  protected readonly email = this.params['email'] ?? '';
+  private readonly token = this.params['token'] ?? '';
   protected readonly linkValid = !!this.email && !!this.token;
 
   protected readonly form = inject(NonNullableFormBuilder).group(

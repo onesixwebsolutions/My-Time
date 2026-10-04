@@ -113,15 +113,28 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // ---------------------------------------------------------------------
 // CORS — the Angular dev server, with credentials so SignalR's negotiate/cookie flow works.
 // ---------------------------------------------------------------------
+// Only registered when needed: in Development (default http://localhost:4200), or anywhere when
+// Cors:AllowedOrigins is set explicitly. Production serves the SPA and the API from one origin and
+// has no CORS policy at all unless configured.
 const string AngularDevCorsPolicy = "AngularDev";
 var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() is { Length: > 0 } configuredOrigins
     ? configuredOrigins
-    : new[] { "http://localhost:4200" };
-builder.Services.AddCors(options => options.AddPolicy(AngularDevCorsPolicy, policy => policy
-    .WithOrigins(corsOrigins)
-    .AllowAnyHeader()
-    .AllowAnyMethod()
-    .AllowCredentials()));
+    : builder.Environment.IsDevelopment() ? new[] { "http://localhost:4200" } : null;
+if (corsOrigins is not null)
+{
+    builder.Services.AddCors(options => options.AddPolicy(AngularDevCorsPolicy, policy => policy
+        .WithOrigins(corsOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials()));
+}
+
+// ---------------------------------------------------------------------
+// Request size — the API's JSON bodies are tiny; cap them (Kestrel, plus RequestBodyLimitMiddleware
+// for a clean 413 problem response and for hosts other than Kestrel).
+// ---------------------------------------------------------------------
+var maxRequestBodyBytes = Math.Max(1024, builder.Configuration.GetValue<long>("Limits:MaxRequestBodyBytes", RequestBodyLimitMiddleware.DefaultMaxBytes));
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = maxRequestBodyBytes);
 
 // ---------------------------------------------------------------------
 // Authentication & authorization — ASP.NET Core Identity with the daygrid.auth cookie,
@@ -129,7 +142,7 @@ builder.Services.AddCors(options => options.AddPolicy(AngularDevCorsPolicy, poli
 // authenticated, email-confirmed user on every endpoint, the Admin policy, the auth rate limiter
 // and Data Protection keys in the database. See Auth/AuthSetup.cs and the auth contract.
 // ---------------------------------------------------------------------
-builder.Services.AddDayGridAuth();
+builder.Services.AddDayGridAuth(builder.Configuration);
 
 // ---------------------------------------------------------------------
 // SignalR — [Authorize] hub; events go to Clients.User(userId) only.
@@ -191,6 +204,12 @@ builder.Services.AddScoped<IEmailSender>(sp =>
     sp.GetRequiredService<IOptions<EmailSettings>>().Value.Mode == EmailDeliveryMode.Pickup
         ? sp.GetRequiredService<PickupDirectoryEmailSender>()
         : sp.GetRequiredService<MailKitEmailSender>());
+// Account emails (confirm, reset, already-registered, password-changed) go through a bounded
+// background queue with per-recipient cooldown/daily caps (Email:AccountEmails) — see AccountEmailQueue.
+builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection("Email:AccountEmails"));
+builder.Services.AddSingleton<AccountEmailQueue>();
+builder.Services.AddSingleton<IAccountEmailQueue>(sp => sp.GetRequiredService<AccountEmailQueue>());
+builder.Services.AddHostedService<AccountEmailDispatcher>();
 
 // ---------------------------------------------------------------------
 // Application services
@@ -226,6 +245,20 @@ if (app.Environment.IsProduction()
     throw new InvalidOperationException(
         "App:PublicBaseUrl must be set to the site's absolute public URL in Production (e.g. App__PublicBaseUrl=https://daygrid.example.com).");
 }
+
+// Who becomes the first administrator (at email confirmation) — see BootstrapAdminPolicy.
+var bootstrapAdmin = app.Services.GetRequiredService<BootstrapAdminPolicy>();
+if (bootstrapAdmin.Mode == BootstrapAdminMode.None && app.Environment.IsProduction())
+    app.Logger.LogWarning(
+        "Auth:BootstrapAdminEmail is not set: no account will be granted Admin automatically. Set Auth__BootstrapAdminEmail " +
+        "to the administrator's email address; that account becomes Admin (and claims any legacy data) when it confirms its email.");
+else
+    app.Logger.LogInformation("Bootstrap admin mode: {Mode}", bootstrapAdmin.Mode);
+
+if (AuthSetup.KeyVaultKeyUri(app.Configuration) is null && app.Environment.IsProduction() && embeddedPg is null)
+    app.Logger.LogWarning(
+        "DataProtection:KeyVaultKeyUri is not set: the Data Protection key ring (which protects auth cookies and tokens) " +
+        "is stored unencrypted in the database. Set DataProtection__KeyVaultKeyUri to an Azure Key Vault key to encrypt it at rest.");
 
 // ---------------------------------------------------------------------
 // Schema migrations (db/migrations/NNNN_*.sql, embedded in DayGrid.Infrastructure). External
@@ -265,6 +298,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseMiddleware<SecurityHeadersMiddleware>();
+app.UseMiddleware<RequestBodyLimitMiddleware>(maxRequestBodyBytes);
 
 app.UseSerilogRequestLogging();
 
@@ -312,8 +346,8 @@ if (app.Environment.IsDevelopment())
     using var scope = app.Services.CreateScope();
     try
     {
-        // A system (unfiltered) context: sample rows are inserted unowned, so the first account
-        // to register claims them. No-op once data or any account exists.
+        // A system (unfiltered) context: sample rows are inserted unowned, so the bootstrap admin
+        // claims them when it confirms its email. No-op once data or any account exists.
         await using var systemDb = new AppDbContext(scope.ServiceProvider.GetRequiredService<DbContextOptions<AppDbContext>>());
         SeedData.Seed(systemDb);
     }
@@ -328,7 +362,8 @@ if (app.Environment.IsDevelopment())
 app.UseStaticFiles();
 
 app.UseRouting();
-app.UseCors(AngularDevCorsPolicy);
+if (corsOrigins is not null)
+    app.UseCors(AngularDevCorsPolicy);
 app.UseAuthentication();
 app.UseRateLimiter();
 app.UseAuthorization();

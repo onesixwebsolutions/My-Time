@@ -34,6 +34,7 @@ public class AppUserConfiguration : IEntityTypeConfiguration<AppUser>
         b.Property(u => u.DisplayName).HasColumnName("display_name").HasMaxLength(AppUser.DisplayNameMaxLength).IsRequired();
         b.Property(u => u.CreatedAt).HasColumnName("created_at");
         b.Property(u => u.LastLoginAt).HasColumnName("last_login_at");
+        b.Property(u => u.IsDisabled).HasColumnName("is_disabled"); // 0003_account_disabled.sql
 
         b.HasIndex(u => u.NormalizedUserName).HasDatabaseName("ux_users_normalized_user_name").IsUnique();
         // Unique (Identity's default index is not): concurrent registrations of one email can't both win.

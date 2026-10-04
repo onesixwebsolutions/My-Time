@@ -1,4 +1,4 @@
-import { newBrowserContext, newUserData, readState, submitLogin } from './support/auth';
+import { confirmViaUi, newBrowserContext, newUserData, readState, submitLogin } from './support/auth';
 import { apiPost, appDate, uid } from './support/data';
 import { countEmails, waitForLink } from './support/email';
 import { expect, test } from './support/fixtures';
@@ -56,8 +56,7 @@ test('two-user isolation: a new user sees none of the first user’s data', asyn
     await b.locator('#register-password').fill(user.password);
     await b.getByRole('button', { name: 'Create account' }).click();
     await expect(b).toHaveURL(/\/register\/check-email/);
-    await b.goto(await waitForLink(state.pickupDir, user.email, '/confirm-email', { since: before }));
-    await expect(b.getByRole('heading', { level: 1 })).toHaveText('Email confirmed');
+    await confirmViaUi(b, await waitForLink(state.pickupDir, user.email, '/confirm-email', { since: before }), user.password);
     await b.goto('/login');
     await submitLogin(b, user.email, user.password);
     await expect(b).toHaveURL(/\/today$/);

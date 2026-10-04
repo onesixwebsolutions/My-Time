@@ -7,7 +7,8 @@ namespace DayGrid.Api.Endpoints;
 /// is a thin call into <see cref="IDayPlanBuilder"/> — no business logic lives in this file.</summary>
 public static class TodayEndpoints
 {
-    private const int MaxRangeDays = 366;
+    /// <summary>Longest /days/range request (inclusive days): two months, enough for a calendar view.</summary>
+    public const int MaxRangeDays = 62;
 
     public static IEndpointRouteBuilder MapTodayEndpoints(this IEndpointRouteBuilder app)
     {
@@ -42,10 +43,10 @@ public static class TodayEndpoints
         {
             if (to < from)
                 return Results.BadRequest(new { error = "'to' must not be before 'from'." });
-            if (to.DayNumber - from.DayNumber > MaxRangeDays)
+            if (to.DayNumber - from.DayNumber + 1 > MaxRangeDays)
                 return Results.BadRequest(new { error = $"Range must not exceed {MaxRangeDays} days." });
 
-            // A month range is at most ~31 iterations — building the full plan per day is wasteful
+            // A range is at most 62 iterations — building the full plan per day is wasteful
             // but simple and correct; revisit with a dedicated lightweight query if this becomes a
             // hot path (see plan section 8, "/today getting slow").
             var results = new List<object>();

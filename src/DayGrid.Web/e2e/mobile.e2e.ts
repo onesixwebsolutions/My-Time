@@ -33,6 +33,9 @@ test.describe('mobile viewport', () => {
 
   test('navigation is reachable and usable', async ({ page }) => {
     await page.goto('/today');
+    // Wait for the shell: before it renders, isVisible() below is false and the menu-toggle
+    // fallback would open the user menu (whose backdrop then swallows the clicks).
+    await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible();
     for (const route of ROUTES.filter((r) => r.nav)) {
       const link = page.getByRole('link', { name: route.nav!, exact: true });
       // Open a navigation menu first if the layout collapses the sidebar behind a toggle.

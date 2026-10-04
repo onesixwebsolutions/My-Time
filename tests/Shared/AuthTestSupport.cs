@@ -29,6 +29,14 @@ public sealed class FakeEmailSender : IEmailSender
 
     public Exception? FailWith { get; set; }
 
+    private Func<Task>? _settle;
+
+    /// <summary>Account emails are sent by a background queue: lets <see cref="SettleAsync"/> wait for it.</summary>
+    public void SettleWith(Func<Task> settle) => _settle = settle;
+
+    /// <summary>Waits until every queued account email has been handed to this sender.</summary>
+    public Task SettleAsync() => _settle?.Invoke() ?? Task.CompletedTask;
+
     public IReadOnlyList<(string To, string Subject, string Body)> Sent
     {
         get { lock (_sent) return _sent.ToList(); }
@@ -139,8 +147,11 @@ public static class TestAccounts
             throw new InvalidOperationException("Could not create test user: " + string.Join("; ", created.Result.Errors.Select(e => e.Description)));
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
         var user = (await userManager.FindByIdAsync(created.User.Id.ToString()))!;
-        user.EmailConfirmed = true;
-        await userManager.UpdateAsync(user);
+        // The real confirmation path (bootstrap-Admin rule, security stamp rotation).
+        var token = await userManager.GenerateEmailConfirmationTokenAsync(user);
+        var confirmed = await accounts.ConfirmEmailAsync(user, token, CancellationToken.None);
+        if (!confirmed.Result.Succeeded)
+            throw new InvalidOperationException("Could not confirm test user: " + string.Join("; ", confirmed.Result.Errors.Select(e => e.Description)));
         return user.Id;
     }
 
@@ -155,10 +166,12 @@ public static class TestAccounts
         return (session, userId, email);
     }
 
-    /// <summary>Extracts (first query parameter value, token) from the newest email link to <paramref name="path"/>.</summary>
-    public static (string First, string Token) ExtractLink(FakeEmailSender email, string to, string path)
+    /// <summary>Extracts (first fragment parameter value, token) from the newest email link to
+    /// <paramref name="path"/>, after waiting for the background email queue.</summary>
+    public static async Task<(string First, string Token)> ExtractLinkAsync(FakeEmailSender email, string to, string path)
     {
-        var message = email.SentTo(to).LastOrDefault(m => m.Body.Contains("/" + path + "?", StringComparison.Ordinal));
+        await email.SettleAsync();
+        var message = email.SentTo(to).LastOrDefault(m => m.Body.Contains("/" + path + "#", StringComparison.Ordinal));
         if (message.Body is null)
             throw new InvalidOperationException($"No '{path}' email was sent to {to}. Sent: {string.Join(", ", email.Sent.Select(m => m.To + ": " + m.Subject))}");
         return ParseLink(WebUtility.HtmlDecode(message.Body), path);
@@ -166,7 +179,8 @@ public static class TestAccounts
 
     public static (string First, string Token) ParseLink(string text, string path)
     {
-        var match = Regex.Match(text, "/" + Regex.Escape(path) + @"\?(?:userId|email)=([^&""\s<]+)&token=([A-Za-z0-9_\-]+)");
+        // Tokens travel in the URL fragment (#userId=..&token=..), never in the query string.
+        var match = Regex.Match(text, "/" + Regex.Escape(path) + @"#(?:userId|email)=([^&""\s<]+)&token=([A-Za-z0-9_\-]+)");
         if (!match.Success)
             throw new InvalidOperationException($"No '{path}' link found in: {text}");
         return (Uri.UnescapeDataString(match.Groups[1].Value), match.Groups[2].Value);

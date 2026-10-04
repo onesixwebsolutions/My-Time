@@ -135,6 +135,8 @@ public static class ChecklistsEndpoints
 
         group.MapPut("/reorder", async (AppDbContext db, ReorderRequest request, CancellationToken ct) =>
         {
+            if (request.Items is { Count: > ReorderRequest.MaxItems })
+                return Required("items", $"At most {ReorderRequest.MaxItems} items per request.");
             if (ToSortOrderMap(request) is not { } sortOrderById)
                 return Required("items", "Items are required.");
             var ids = sortOrderById.Keys.ToList();
@@ -204,6 +206,8 @@ public static class ChecklistsEndpoints
 
         group.MapPut("/{id:guid}/items/reorder", async (AppDbContext db, Guid id, ReorderRequest request, CancellationToken ct) =>
         {
+            if (request.Items is { Count: > ReorderRequest.MaxItems })
+                return Required("items", $"At most {ReorderRequest.MaxItems} items per request.");
             if (ToSortOrderMap(request) is not { } sortOrderById)
                 return Required("items", "Items are required.");
             if (!await db.Checklists.AnyAsync(c => c.Id == id, ct))

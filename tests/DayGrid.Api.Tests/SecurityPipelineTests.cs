@@ -301,6 +301,8 @@ public class PickupEmailFlowTests : IClassFixture<PickupEmailFlowTests.PickupFac
         Assert.Equal(HttpStatusCode.Accepted, (await session.Client.PostAsJsonAsync("/api/v1/auth/register",
             new { email, password = TestAccounts.Password, displayName = "Pickup" })).StatusCode);
 
+        // Sent by the background account-email queue.
+        Assert.True(await _factory.Services.GetRequiredService<AccountEmailQueue>().WaitForIdleAsync(TimeSpan.FromSeconds(10)));
         var messages = new List<MimeMessage>();
         foreach (var file in Directory.GetFiles(_factory.PickupDirectory, "*.eml"))
             messages.Add(await MimeMessage.LoadAsync(file));
@@ -309,8 +311,8 @@ public class PickupEmailFlowTests : IClassFixture<PickupEmailFlowTests.PickupFac
         Assert.Equal("no-reply@daygrid.test", message.From.Mailboxes.Single().Address);
 
         var (userId, token) = TestAccounts.ParseLink(WebUtility.HtmlDecode(message.HtmlBody!), "confirm-email");
-        Assert.StartsWith("https://daygrid.test/confirm-email?userId=", WebUtility.HtmlDecode(Regex.Match(message.HtmlBody!, "href=\"([^\"]+)\"").Groups[1].Value));
-        Assert.Equal(HttpStatusCode.NoContent, (await session.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId, token })).StatusCode);
+        Assert.StartsWith("https://daygrid.test/confirm-email#userId=", WebUtility.HtmlDecode(Regex.Match(message.HtmlBody!, "href=\"([^\"]+)\"").Groups[1].Value));
+        Assert.Equal(HttpStatusCode.NoContent, (await session.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId, token, password = TestAccounts.Password })).StatusCode);
 
         await session.LoginOrThrowAsync(email, TestAccounts.Password);
         var me = await TestAccounts.JsonAsync(await session.Client.GetAsync("/api/v1/auth/me"));

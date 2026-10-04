@@ -34,6 +34,7 @@ public abstract class IntegrationTestBase : IAsyncLifetime
 
     public virtual async Task InitializeAsync()
     {
+        await Fx.Factory.Email.SettleAsync(); // a previous test's queued emails must not leak into this one
         await Fx.ResetAsync();
         Fx.Factory.Email.Reset();
         if (SignInDefaultUser)

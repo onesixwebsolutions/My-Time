@@ -113,6 +113,8 @@ public static class TasksEndpoints
         {
             if (request.Items is null)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["items"] = ["Items are required."] });
+            if (request.Items.Count > ReorderRequest.MaxItems)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["items"] = [$"At most {ReorderRequest.MaxItems} items per request."] });
 
             // Last entry wins on duplicate ids (ToDictionary threw -> 500).
             var sortOrderById = new Dictionary<Guid, int>();

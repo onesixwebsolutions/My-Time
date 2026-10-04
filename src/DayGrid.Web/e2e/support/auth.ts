@@ -85,13 +85,21 @@ export async function registerUser(baseURL: string, user: TestUser): Promise<voi
   }
 }
 
-/** Confirms an account by POSTing the userId/token from a /confirm-email link. */
-export async function confirmFromLink(baseURL: string, link: string): Promise<void> {
-  const url = new URL(link);
+/**
+ * The parameters of an emailed account link. They travel in the URL fragment
+ * (`/confirm-email#userId=..&token=..`) so the token never reaches a server log.
+ */
+export function linkParams(link: string): URLSearchParams {
+  return new URLSearchParams(new URL(link).hash.replace(/^#/, ''));
+}
+
+/** Confirms an account by POSTing the userId/token from a /confirm-email link plus its password. */
+export async function confirmFromLink(baseURL: string, link: string, password: string): Promise<void> {
+  const params = linkParams(link);
   const api = await newApiContext(baseURL);
   try {
     const res = await api.post('/api/v1/auth/confirm-email', {
-      data: { userId: url.searchParams.get('userId'), token: url.searchParams.get('token') }
+      data: { userId: params.get('userId'), token: params.get('token'), password }
     });
     expect(res.status(), await res.text()).toBe(204);
   } finally {
@@ -105,7 +113,7 @@ export async function createConfirmedUser(prefix = 'user', state: E2eState = rea
   const before = countEmails(state.pickupDir);
   await registerUser(state.baseURL, user);
   const link = await waitForLink(state.pickupDir, user.email, '/confirm-email', { since: before });
-  await confirmFromLink(state.baseURL, link);
+  await confirmFromLink(state.baseURL, link, user.password);
   return user;
 }
 
@@ -128,6 +136,19 @@ export async function newBrowserContext(browser: Browser, state: E2eState = read
     locale: 'en-IN',
     viewport: { width: 1366, height: 900 }
   });
+}
+
+/**
+ * Opens an emailed /confirm-email link in the browser, checks the token was stripped from the
+ * address bar, enters the account password and waits for "Email confirmed".
+ */
+export async function confirmViaUi(page: Page, link: string, password: string): Promise<void> {
+  await page.goto(link);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Confirm your email');
+  expect(page.url()).not.toContain('token');
+  await page.locator('#confirm-password').fill(password);
+  await page.getByRole('button', { name: 'Confirm email' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Email confirmed');
 }
 
 /** Fills and submits the login form (the page must be on /login). */

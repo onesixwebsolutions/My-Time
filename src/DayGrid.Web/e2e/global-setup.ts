@@ -6,7 +6,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { confirmFromLink, newApiContext, newUserData, registerUser } from './support/auth';
+import { TestUser, confirmFromLink, newApiContext, newUserData, registerUser } from './support/auth';
 import { waitForLink } from './support/email';
 import {
   API_PROJECT,
@@ -32,7 +32,7 @@ const READY_TIMEOUT_MS = 240_000;
  *    pickup folder as .eml files and App:PublicBaseUrl points at the test server so the links
  *    in them open the test app.
  * 3. Wait for /health/ready.
- * 4. Register + confirm the first account (Admin) through the API and the .eml link, and save
+ * 4. Register + confirm the bootstrap-admin account (Auth__BootstrapAdminEmail) through the API and the .eml link, and save
  *    its signed-in storageState, which every spec's browser context starts from.
  */
 export default async function globalSetup(): Promise<void> {
@@ -56,9 +56,11 @@ export default async function globalSetup(): Promise<void> {
   const attempts = 2;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const state = await startApi(exe);
+      // The admin's address is known up front: it is the server's Auth:BootstrapAdminEmail.
+      const admin = newUserData('admin');
+      const state = await startApi(exe, admin.email);
       process.env['E2E_BASE_URL'] = state.baseURL;
-      state.admin = await registerAdmin(state);
+      state.admin = await registerAdmin(state, admin);
       fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
       return;
     } catch (err) {
@@ -70,7 +72,7 @@ ${(err as Error).message}`);
 }
 
 /** Starts the published API against a fresh embedded-Postgres data dir and waits for readiness. */
-async function startApi(exe: string): Promise<E2eState> {
+async function startApi(exe: string, bootstrapAdminEmail: string): Promise<E2eState> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'daygrid-e2e-data-'));
   seedPostgresBinaries(dataDir);
 
@@ -97,6 +99,10 @@ async function startApi(exe: string): Promise<E2eState> {
       Database__EmbeddedDataDir: dataDir,
       App__TimeZone: 'Asia/Kolkata',
       App__PublicBaseUrl: baseURL,
+      // Only this address becomes Admin (when it confirms its email) — the Production rule.
+      Auth__BootstrapAdminEmail: bootstrapAdminEmail,
+      // Specs re-send emails to one address within seconds; flood protection has its own .NET tests.
+      Email__AccountEmails__CooldownSeconds: '0',
       // Every email (confirmation, reset, reminders) becomes an .eml file — never real SMTP.
       Email__Mode: 'Pickup',
       Email__PickupDirectory: pickupDir,
@@ -142,13 +148,13 @@ ${output.slice(-6000)}`
   );
 }
 
-/** Registers the first account (which becomes Admin), confirms it from its .eml and saves the session. */
-async function registerAdmin(state: E2eState): Promise<NonNullable<E2eState['admin']>> {
-  const admin = newUserData('admin');
+/** Registers the bootstrap-admin account, confirms it from its .eml (becoming Admin) and saves the session. */
+async function registerAdmin(state: E2eState, admin: TestUser): Promise<NonNullable<E2eState['admin']>> {
   await registerUser(state.baseURL, admin);
   const link = await waitForLink(state.pickupDir, admin.email, '/confirm-email');
-  if (!link.startsWith(`${state.baseURL}/confirm-email?`)) throw new Error(`Unexpected confirmation link ${link}`);
-  await confirmFromLink(state.baseURL, link);
+  // The token is in the fragment, never the query string (it must not reach server logs).
+  if (!link.startsWith(`${state.baseURL}/confirm-email#userId=`)) throw new Error(`Unexpected confirmation link ${link}`);
+  await confirmFromLink(state.baseURL, link, admin.password);
 
   const api = await newApiContext(state.baseURL);
   try {

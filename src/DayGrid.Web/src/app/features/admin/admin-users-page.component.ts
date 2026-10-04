@@ -92,7 +92,8 @@ export const ADMIN_ERROR_MESSAGES: Record<string, string> = {
                     <span class="rounded px-1.5 py-0.5 text-[11px] font-semibold text-warning">Unconfirmed</span>
                   }
                   @if (u.lockedOut) {
-                    <span class="rounded px-1.5 py-0.5 text-[11px] font-semibold text-danger">Locked</span>
+                    <span class="rounded px-1.5 py-0.5 text-[11px] font-semibold text-danger"
+                      [attr.title]="u.disabled ? 'Locked by an administrator' : 'Temporarily locked after failed sign-ins'">Locked</span>
                   }
                 </span>
               </td>

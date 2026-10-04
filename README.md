@@ -63,8 +63,9 @@ dotnet watch run                          # Swagger at /swagger (Development onl
 
 # 3. Create your account: register in the web app. In Development, emails are written as .eml
 #    files to src/DayGrid.Api/bin/<config>/net8.0/mail-pickup/ (Email:Mode=Pickup) — open the
-#    newest one and follow the confirmation link. The FIRST account becomes Admin and takes
-#    ownership of all data that existed before accounts were introduced.
+#    newest one, follow the confirmation link and enter your password. In Development the FIRST
+#    account to CONFIRM its email becomes Admin and takes ownership of all data that existed
+#    before accounts were introduced (in Production only Auth:BootstrapAdminEmail does — see below).
 
 # 4. Frontend
 cd src/DayGrid.Web
@@ -91,8 +92,8 @@ with:
 psql -h <host> -U daygrid -d daygrid -f db/seed.sql    # sample data (uses psql \gset — must run via psql)
 ```
 
-Load it **before registering the first account**: seeded rows have no owner (`user_id` NULL) and
-the first account to register claims them. `db/dump_with_sample_data.sql` is a pg_dump of the
+Load it **before the admin account confirms its email**: seeded rows have no owner (`user_id` NULL)
+and the bootstrap admin claims them at confirmation. `db/dump_with_sample_data.sql` is a pg_dump of the
 *pre-accounts* schema (it also contains a `CREATE EXTENSION pgcrypto` that Azure rejects); restore
 it into an empty database and start the API — the migrator baselines it at 0001 and upgrades it.
 docker-compose no longer mounts any SQL into `/docker-entrypoint-initdb.d/` (the API owns the schema).
@@ -123,6 +124,7 @@ The schema is a series of hand-written, versioned SQL migrations in `db/migratio
 |---|---|
 | `0001_initial.sql` | the original schema (formerly `db/init.sql`) |
 | `0002_auth_multitenancy.sql` | Identity tables (`users`, `roles`, `user_roles`, `user_claims`, `user_logins`, `user_tokens`, `role_claims`), `data_protection_keys`, `user_id` (FK → users, ON DELETE CASCADE) on every data table, per-user uniques (`day_overrides(user_id, date)`, `app_settings(user_id)`), roles User/Admin |
+| `0003_account_disabled.sql` | `users.is_disabled` — the admin "lock" state, separate from the brute-force lockout (existing admin locks are carried over) |
 
 - Applied versions are recorded in `schema_migrations(version, applied_at)`; each migration runs in
   its own transaction; a session advisory lock serialises concurrent app starts.
@@ -130,7 +132,7 @@ The schema is a series of hand-written, versioned SQL migrations in `db/migratio
   Development set it) and always in Embedded mode.
 - A database created from the old `db/init.sql` (tables present, no `schema_migrations`) is
   detected, baselined at 0001 and upgraded in place; existing rows are kept with `user_id` NULL
-  until the first account registers and claims them.
+  until the bootstrap admin confirms its email and claims them.
 - No `CREATE EXTENSION` anywhere (Azure Database for PostgreSQL Flexible Server compatible).
 - Never edit an applied migration — add `0003_...sql`. EF Core migrations are not used; the EF
   model is kept in step by `tests/DayGrid.IntegrationTests/Schema/SchemaParityTests.cs`.
@@ -145,10 +147,34 @@ The schema is a series of hand-written, versioned SQL migrations in `db/migratio
   every unsafe `/api` request. Unauthenticated API calls get 401 (never a redirect).
 - Every data row belongs to a user: EF global query filters + insert stamping + a save-time
   check that rejects foreign keys pointing at another user's rows. Another user's id → 404.
-- Roles: User, Admin. The first account becomes Admin. Admins manage accounts
+- Roles: User, Admin. **Bootstrap admin:** the account whose email equals `Auth:BootstrapAdminEmail`
+  is granted Admin — and claims the pre-accounts (`user_id` NULL) data — when it *confirms* its
+  email (never at registration, so registering first cannot take the site over). Without that
+  setting, Development and the Embedded desktop exe fall back to "the first account to confirm";
+  Production grants no automatic Admin and logs a startup warning. Admins manage accounts
   (`/api/v1/admin/users`) but cannot read anyone's data.
+- Admin "lock" disables an account (`users.is_disabled`): sessions end at once (security stamp
+  rotated); sign-in, password reset and confirmation are refused. A password reset ends a
+  brute-force lockout but never re-enables a disabled account; only an admin "unlock" does.
+- No account enumeration: register, login, forgot-password and resend-confirmation answer with the
+  same status and body whether or not the address has an account (unknown addresses are "locked
+  out" after the same 5 failures), and account emails go through a background queue so response
+  times do not depend on them. Per recipient at most one email of each kind per minute and 10 per
+  day (`Email:AccountEmails`); extras are dropped silently and logged.
+- Email links carry their token in the URL fragment (`/confirm-email#userId=..&token=..`,
+  `/reset-password#email=..&token=..`), which browsers never send to a server; the pages remove it
+  from the address bar after reading it (older `?query` links still work). Confirming an email
+  also requires the account password; a password reset by emailed token confirms an unconfirmed
+  address (how the real owner recovers an address someone else pre-registered).
+- Sign-out rotates the security stamp: a copied session cookie stops working — and the user is
+  signed out on every device (deliberate trade-off).
+- Request limits: bodies ≤ 1 MB (413), `/days/range` ≤ 62 days, reorder ≤ 500 items, ≤ 20
+  reminders per future-task request, admin list `pageSize` ≤ 100.
+- CORS: only in Development (`http://localhost:4200`) or when `Cors:AllowedOrigins` is set.
 - Time zone is per user (`app_settings.time_zone`, IANA id; default `App:TimeZone`).
-- Data Protection keys live in the database (cookies survive restarts / scale-out).
+- Data Protection keys live in the database (cookies survive restarts / scale-out). Set
+  `DataProtection:KeyVaultKeyUri` to encrypt them at rest with an Azure Key Vault key
+  (`DefaultAzureCredential`, e.g. the App Service managed identity); unset logs a warning in Production.
 - Outside Development: HSTS + HTTPS redirection; CSP and other security headers on every response.
 
 ## Config
@@ -166,10 +192,20 @@ variables already wired into `docker-compose.yml`.
 | `Email:Mode` | `Smtp` (`Pickup` in Development) | `Pickup` writes `.eml` files instead of sending |
 | `Email:PickupDirectory` | (none) | Pickup folder; relative paths resolve against the app's base directory |
 | `Email:FromAddress` | `Email:User` | Sender address |
-| `Auth:SecurityStampValidationIntervalSeconds` | `60` | How quickly password changes/locks end other sessions |
+| `Auth:BootstrapAdminEmail` | (none) | The account that becomes Admin when it confirms its email. Set via environment (`Auth__BootstrapAdminEmail`), never in appsettings.json |
+| `Auth:SecurityStampValidationIntervalSeconds` | `60` | How quickly password changes, logout and locks end other sessions |
+| `DataProtection:KeyVaultKeyUri` | (none) | Azure Key Vault key URI that encrypts the Data Protection key ring at rest |
+| `Email:AccountEmails:CooldownSeconds` / `DailyLimitPerRecipient` / `QueueCapacity` | `60` / `10` / `1000` | Account-email flood protection and queue size |
+| `Cors:AllowedOrigins` | (none; `http://localhost:4200` in Development) | Cross-origin SPA origins (credentials allowed) |
+| `Limits:MaxRequestBodyBytes` | `1048576` | Largest accepted request body |
 | `RateLimiting:Auth:PermitLimit` / `WindowSeconds` | `10` / `60` | Auth endpoint rate limit per client IP |
 
-**Azure:** add the app setting `App__PublicBaseUrl=https://<your-site>` (not yet in `infra/main.bicep`).
+**Azure:** add the app settings `App__PublicBaseUrl=https://<your-site>`, `Auth__BootstrapAdminEmail=<admin address>`
+and (recommended) `DataProtection__KeyVaultKeyUri` (not yet in `infra/main.bicep`).
+
+**Dependencies:** `dotnet list package --vulnerable --include-transitive` reports only SharpCompress (via
+MysticMind.PostgresEmbed), used solely to unpack the embedded Postgres binaries in Embedded mode and the
+integration tests — not reachable from HTTP requests.
 
 ## Next steps
 

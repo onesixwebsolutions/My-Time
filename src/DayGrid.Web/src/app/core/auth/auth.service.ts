@@ -52,8 +52,10 @@ export class AuthService {
     return this.http.post<unknown>(`${AUTH_BASE}/register`, request).pipe(map(() => void 0));
   }
 
-  confirmEmail(userId: string, token: string): Observable<void> {
-    return this.http.post<void>(`${AUTH_BASE}/confirm-email`, { userId, token });
+  /** POST /auth/confirm-email — the account password is required as well as the emailed token
+   * (whoever registered an address they don't own cannot get its owner to activate it). */
+  confirmEmail(userId: string, token: string, password: string): Observable<void> {
+    return this.http.post<void>(`${AUTH_BASE}/confirm-email`, { userId, token, password });
   }
 
   resendConfirmation(email: string): Observable<void> {

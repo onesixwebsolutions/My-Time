@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using Azure.Identity;
 using DayGrid.Infrastructure.Data;
 using DayGrid.Infrastructure.Identity;
 using Microsoft.AspNetCore.Antiforgery;
@@ -20,7 +21,7 @@ public static class AuthSetup
 {
     public const string EmailConfirmationTokenProvider = "EmailConfirmation";
 
-    public static IServiceCollection AddDayGridAuth(this IServiceCollection services)
+    public static IServiceCollection AddDayGridAuth(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddIdentity<AppUser, IdentityRole<Guid>>(options =>
             {
@@ -49,7 +50,8 @@ public static class AuthSetup
             .AddDefaultTokenProviders()
             .AddTokenProvider<EmailConfirmationTokenProvider<AppUser>>(EmailConfirmationTokenProvider)
             .AddPasswordValidator<MaxLengthPasswordValidator>()
-            .AddClaimsPrincipalFactory<AppClaimsPrincipalFactory>();
+            .AddClaimsPrincipalFactory<AppClaimsPrincipalFactory>()
+            .AddSignInManager<AppSignInManager>();
 
         // Password-reset tokens (default provider) are short-lived; confirmation links last longer.
         services.Configure<DataProtectionTokenProviderOptions>(o => o.TokenLifespan = TimeSpan.FromHours(2));
@@ -128,13 +130,36 @@ public static class AuthSetup
         });
 
         // Keys in the database: cookies and tokens survive restarts and work across instances.
-        services.AddDataProtection()
+        // DataProtection:KeyVaultKeyUri (optional) additionally encrypts the key ring at rest with
+        // an Azure Key Vault key, authenticating with DefaultAzureCredential (managed identity on
+        // App Service). Unset: keys are stored unencrypted in the database (warning in Production).
+        var dataProtection = services.AddDataProtection()
             .SetApplicationName("DayGrid")
             .PersistKeysToDbContext<AppDbContext>();
+        if (KeyVaultKeyUri(configuration) is { } keyUri)
+            dataProtection.ProtectKeysWithAzureKeyVault(keyUri, new DefaultAzureCredential());
 
+        services.AddSingleton(sp => BootstrapAdminPolicy.FromConfiguration(
+            sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILookupNormalizer>()));
+        services.AddSingleton<UnknownAccountLockout>();
         services.AddScoped<AccountService>();
         services.AddSingleton<AuditLog>();
         return services;
+    }
+
+    public const string KeyVaultKeyUriConfigKey = "DataProtection:KeyVaultKeyUri";
+
+    /// <summary>The configured Key Vault key URI, or null when unset. A value that is not an
+    /// absolute https URI fails startup (a typo must not silently disable key encryption).</summary>
+    public static Uri? KeyVaultKeyUri(IConfiguration configuration)
+    {
+        var value = configuration[KeyVaultKeyUriConfigKey];
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidOperationException(
+                $"{KeyVaultKeyUriConfigKey} must be an absolute https URI of a Key Vault key (e.g. https://myvault.vault.azure.net/keys/dataprotection).");
+        return uri;
     }
 
     internal static async Task WriteProblemAsync(HttpContext context, int status, string code, string title)

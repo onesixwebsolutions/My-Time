@@ -1,4 +1,13 @@
-import { createConfirmedUser, newUserData, readState, registerUser, signInViaUi, signOutViaUi, submitLogin } from './support/auth';
+import {
+  confirmViaUi,
+  createConfirmedUser,
+  newUserData,
+  readState,
+  registerUser,
+  signInViaUi,
+  signOutViaUi,
+  submitLogin
+} from './support/auth';
 import { countEmails, listEmails, waitForLink } from './support/email';
 import { expect, test } from './support/fixtures';
 
@@ -10,7 +19,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 const LOGIN = '/api/v1/auth/login';
 
 test.describe('authentication', () => {
-  test('register → check-email page → confirm link from .eml → sign in → Today', async ({ page }) => {
+  test('register → check-email page → confirm link from .eml (with password) → sign in → Today', async ({ page, guard }) => {
     const state = readState();
     const user = newUserData('reg');
     const before = countEmails(state.pickupDir);
@@ -26,8 +35,21 @@ test.describe('authentication', () => {
     await expect(page.locator('body')).toContainText(user.email);
 
     const link = await waitForLink(state.pickupDir, user.email, '/confirm-email', { since: before });
-    expect(link.startsWith(`${state.baseURL}/confirm-email?userId=`)).toBe(true);
+    // The token travels in the fragment, so it never reaches a server (or its logs).
+    expect(link.startsWith(`${state.baseURL}/confirm-email#userId=`)).toBe(true);
+    expect(new URL(link).search).toBe('');
     await page.goto(link);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Confirm your email');
+    // ...and it is removed from the address bar as soon as the page has read it.
+    await expect(page).toHaveURL(/\/confirm-email$/);
+
+    // The account password is required (someone who pre-registered this address can't make its owner activate it).
+    guard.allowApiError('/api/v1/auth/confirm-email', 400);
+    await page.locator('#confirm-password').fill('not my password');
+    await page.getByRole('button', { name: 'Confirm email' }).click();
+    await expect(page.getByRole('alert')).toContainText('That password is not correct');
+    await page.locator('#confirm-password').fill(user.password);
+    await page.getByRole('button', { name: 'Confirm email' }).click();
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Email confirmed');
     await page.getByRole('link', { name: 'Continue to sign in' }).click();
     await expect(page).toHaveURL(/\/login\?confirmed=1$/);
@@ -72,8 +94,7 @@ test.describe('authentication', () => {
 
     const link = await waitForLink(state.pickupDir, user.email, '/confirm-email', { since: countBefore });
     expect(listEmails(state.pickupDir).filter((m) => m.to.includes(user.email)).length).toBe(mailsBefore + 1);
-    await page.goto(link);
-    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Email confirmed');
+    await confirmViaUi(page, link, user.password);
     await page.goto('/login');
     await submitLogin(page, user.email, user.password);
     await expect(page).toHaveURL(/\/today$/);
@@ -93,9 +114,11 @@ test.describe('authentication', () => {
     await expect(page.getByTestId('forgot-confirmation')).toContainText(user.email);
 
     const link = await waitForLink(state.pickupDir, user.email, '/reset-password', { since: before });
-    expect(link.startsWith(`${state.baseURL}/reset-password?email=`)).toBe(true);
+    expect(link.startsWith(`${state.baseURL}/reset-password#email=`)).toBe(true);
     await page.goto(link);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Choose a new password');
+    await expect(page.locator('body')).toContainText(user.email);
+    await expect(page).toHaveURL(/\/reset-password$/); // token stripped from the address bar
     const newPassword = 'a brand new passphrase 42';
     await page.locator('#reset-password').fill(newPassword);
     await page.locator('#reset-password-confirm').fill(newPassword);

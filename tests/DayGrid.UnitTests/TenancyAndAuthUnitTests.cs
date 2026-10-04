@@ -228,11 +228,24 @@ public class EmailTemplateAndPickupTests
     [Fact]
     public void Templates_HtmlEncodeUserSuppliedValues()
     {
-        var content = EmailTemplates.ConfirmEmail("<script>alert(1)</script>", "https://x.test/confirm-email?userId=1&token=abc");
+        var content = EmailTemplates.ResetPassword("<script>alert(1)</script>", "https://x.test/reset-password#email=a&token=abc");
 
         Assert.DoesNotContain("<script>", content.HtmlBody);
         Assert.Contains("&lt;script&gt;", content.HtmlBody);
-        Assert.Contains("https://x.test/confirm-email?userId=1&amp;token=abc", content.HtmlBody);
+        Assert.Contains("https://x.test/reset-password#email=a&amp;token=abc", content.HtmlBody);
+    }
+
+    [Fact]
+    public void EmailsBeforeConfirmation_UseANeutralGreeting()
+    {
+        // The confirmation email never carries a name (it was typed by whoever registered).
+        var confirm = EmailTemplates.ConfirmEmail("https://x.test/confirm-email#userId=1&token=abc");
+        Assert.Contains("<p>Hello,</p>", confirm.HtmlBody);
+        Assert.DoesNotContain("Hi ", confirm.HtmlBody);
+
+        Assert.Contains("<p>Hello,</p>", EmailTemplates.AlreadyRegistered(null, "https://x.test/login", "https://x.test/forgot-password").HtmlBody);
+        Assert.Contains("<p>Hello,</p>", EmailTemplates.PasswordChanged(null, "https://x.test/forgot-password").HtmlBody);
+        Assert.Contains("<p>Hi Ann,</p>", EmailTemplates.PasswordChanged("Ann", "https://x.test/forgot-password").HtmlBody);
     }
 
     [Fact]

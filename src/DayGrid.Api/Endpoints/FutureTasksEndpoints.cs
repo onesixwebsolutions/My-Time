@@ -77,6 +77,8 @@ public static class FutureTasksEndpoints
                 return TitleRequired();
             if (await ChecklistMissingAsync(db, request.PromoteToChecklistId, ct))
                 return ChecklistNotFound();
+            if (request.Reminders is { Count: > MaxRemindersPerRequest })
+                return TooManyReminders();
             if (HasInvalidOffset(request.Reminders))
                 return InvalidOffset();
 
@@ -110,6 +112,8 @@ public static class FutureTasksEndpoints
             if (task is null) return Results.NotFound();
             if (await ChecklistMissingAsync(db, request.PromoteToChecklistId, ct))
                 return ChecklistNotFound();
+            if (request.Reminders is { Count: > MaxRemindersPerRequest })
+                return TooManyReminders();
             if (HasInvalidOffset(request.Reminders))
                 return InvalidOffset();
 
@@ -367,6 +371,15 @@ public static class FutureTasksEndpoints
         Results.ValidationProblem(new Dictionary<string, string[]> { ["promoteToChecklistId"] = ["Checklist not found."] });
 
     private const int MaxReminderOffsetMinutes = 366 * 24 * 60;
+
+    /// <summary>Most reminders one create/update request may carry (request-size / DoS cap).</summary>
+    public const int MaxRemindersPerRequest = 20;
+
+    private static IResult TooManyReminders() =>
+        Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["reminders"] = [$"At most {MaxRemindersPerRequest} reminders per task."]
+        });
 
     private static bool HasInvalidOffset(IEnumerable<CreateReminderRequest>? reminders) =>
         reminders is not null && reminders.Any(r => r is null || r.OffsetMinutes is < 0 or > MaxReminderOffsetMinutes);

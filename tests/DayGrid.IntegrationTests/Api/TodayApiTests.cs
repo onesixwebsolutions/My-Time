@@ -83,8 +83,10 @@ public class TodayApiTests : IntegrationTestBase
     [Fact]
     public async Task Range_Caps_AndValidation()
     {
-        Assert.Equal(367, (await GetOkAsync("/api/v1/days/range?from=2026-01-01&to=2027-01-02")).GetArrayLength());
-        await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/range?from=2026-01-01&to=2027-01-03"));
+        // At most 62 days (inclusive) per request.
+        Assert.Equal(62, (await GetOkAsync("/api/v1/days/range?from=2026-01-01&to=2026-03-03")).GetArrayLength());
+        await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/range?from=2026-01-01&to=2026-03-04"));
+        await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/range?from=2026-01-01&to=2027-01-02"));
         await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/range?from=2026-01-02&to=2026-01-01"));
         await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/range?from=2026-01-01"));
         await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.GetAsync("/api/v1/days/not-a-date/summary"));

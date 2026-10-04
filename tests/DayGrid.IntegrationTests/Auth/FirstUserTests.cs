@@ -12,7 +12,8 @@ using Xunit;
 
 namespace DayGrid.IntegrationTests.Auth;
 
-/// <summary>First-account rules: claims all legacy (unowned) rows and becomes Admin — race-safe.</summary>
+/// <summary>Bootstrap-Admin rules in FirstConfirmedUser mode (Development / desktop exe): the first account to
+/// CONFIRM its email claims all legacy (unowned) rows and becomes Admin — race-safe.</summary>
 public class FirstUserTests : IntegrationTestBase
 {
     public FirstUserTests(PostgresFixture fixture) : base(fixture) { }
@@ -24,8 +25,8 @@ public class FirstUserTests : IntegrationTestBase
         var session = new TestSession(factory);
         (await session.PrimeAsync()).Dispose();
         await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync("/api/v1/auth/register", new { email, password, displayName = "Owner" }));
-        var (userId, token) = TestAccounts.ExtractLink(factory.Email, email, "confirm-email");
-        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId, token }));
+        var (userId, token) = await TestAccounts.ExtractLinkAsync(factory.Email, email, "confirm-email");
+        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId, token, password }));
         await session.LoginOrThrowAsync(email, password);
         return (session, Guid.Parse(userId));
     }
@@ -87,9 +88,44 @@ public class FirstUserTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task ConcurrentFirstRegistrations_ProduceExactlyOneAdmin()
+    public async Task Admin_IsGrantedAtConfirmation_NotRegistration()
+    {
+        using var session = new TestSession(Fx.Factory);
+        (await session.PrimeAsync()).Dispose();
+        var first = TestAccounts.NewEmail("first");
+        await AssertStatusAsync(HttpStatusCode.Accepted, await session.Client.PostAsJsonAsync("/api/v1/auth/register", new { email = first, password = TestAccounts.Password, displayName = "F" }));
+        await using (var sys = NewSystemDb())
+            Assert.Equal(0, await sys.UserRoles.CountAsync(r => r.RoleId == AppRoles.AdminRoleId)); // registering first proves nothing
+
+        // A later registrant who confirms first becomes the Admin.
+        var (later, laterId) = await RegisterConfirmAndLoginAsync(Fx.Factory, TestAccounts.NewEmail("later"));
+        using (later)
+            Assert.Equal(new[] { "Admin", "User" }, await RolesAsync(later));
+
+        var (userId, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, first, "confirm-email");
+        await AssertStatusAsync(HttpStatusCode.NoContent, await session.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId, token, password = TestAccounts.Password }));
+        await session.LoginOrThrowAsync(first, TestAccounts.Password);
+        Assert.Equal(new[] { "User" }, await RolesAsync(session));
+        await using (var sys = NewSystemDb())
+            Assert.Equal(new[] { laterId }, await sys.UserRoles.Where(r => r.RoleId == AppRoles.AdminRoleId).Select(r => r.UserId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ConcurrentFirstConfirmations_ProduceExactlyOneAdmin()
     {
         const int n = 8;
+        var links = new List<(string UserId, string Token)>();
+        using (var registrar = new TestSession(Fx.Factory))
+        {
+            (await registrar.PrimeAsync()).Dispose();
+            for (var i = 0; i < n; i++)
+            {
+                var email = $"racer{i}-{Guid.NewGuid():N}@example.test";
+                await AssertStatusAsync(HttpStatusCode.Accepted, await registrar.Client.PostAsJsonAsync("/api/v1/auth/register", new { email, password = TestAccounts.Password, displayName = "R" }));
+                links.Add(await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, email, "confirm-email"));
+            }
+        }
+
         var sessions = Enumerable.Range(0, n).Select(_ => new TestSession(Fx.Factory)).ToList();
         try
         {
@@ -100,11 +136,11 @@ public class FirstUserTests : IntegrationTestBase
             var tasks = sessions.Select((s, i) => Task.Run(async () =>
             {
                 await start.WaitAsync();
-                return await s.Client.PostAsJsonAsync("/api/v1/auth/register", new { email = $"racer{i}-{Guid.NewGuid():N}@example.test", password = TestAccounts.Password, displayName = "R" });
+                return await s.Client.PostAsJsonAsync("/api/v1/auth/confirm-email", new { userId = links[i].UserId, token = links[i].Token, password = TestAccounts.Password });
             })).ToList();
             start.Release(n);
             var responses = await Task.WhenAll(tasks);
-            Assert.All(responses, r => Assert.Equal(HttpStatusCode.Accepted, r.StatusCode));
+            Assert.All(responses, r => Assert.Equal(HttpStatusCode.NoContent, r.StatusCode));
         }
         finally
         {
@@ -112,12 +148,11 @@ public class FirstUserTests : IntegrationTestBase
         }
 
         await using var sys = NewSystemDb();
-        Assert.Equal(n, await sys.Users.CountAsync());
+        Assert.Equal(n, await sys.Users.CountAsync(u => u.EmailConfirmed));
         Assert.Equal(1, await sys.UserRoles.CountAsync(r => r.RoleId == AppRoles.AdminRoleId));
         Assert.Equal(n, await sys.UserRoles.CountAsync(r => r.RoleId == AppRoles.UserRoleId));
         Assert.Equal(n, await sys.AppSettings.CountAsync(s => s.UserId != null));
     }
-
     [Fact]
     public async Task ConcurrentRegistrations_OfOneEmail_CreateOneAccount()
     {
@@ -166,7 +201,7 @@ public class FirstUserTests : IntegrationTestBase
             }
             Assert.True(before["checklists"] > 0 && before["reminders"] > 0 && before["app_settings"] == 1);
 
-            Assert.Equal(new[] { "0002" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Equal(new[] { "0002", "0003" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
 
             await using var factory = new IntegrationApiFactory(cs);
             var (owner, ownerId) = await RegisterConfirmAndLoginAsync(factory, TestAccounts.NewEmail("owner"));

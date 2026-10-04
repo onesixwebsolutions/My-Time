@@ -1,3 +1,4 @@
+using DayGrid.Api.Auth;
 using DayGrid.Application.Time;
 using DayGrid.Infrastructure.BackgroundServices;
 using DayGrid.Infrastructure.Email;
@@ -33,6 +34,7 @@ public class IntegrationApiFactory : WebApplicationFactory<Program>
         if (port == 5432)
             throw new InvalidOperationException("Integration tests must never target port 5432.");
         _connectionString = connectionString;
+        Email.SettleWith(() => Services.GetRequiredService<AccountEmailQueue>().WaitForIdleAsync(TimeSpan.FromSeconds(10)));
 
         // Program.cs reads Database:Mode and the connection string from builder.Configuration
         // before WebApplicationFactory's configuration hooks apply; environment variables are
@@ -53,6 +55,8 @@ public class IntegrationApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:Auth:PermitLimit", AuthPermitLimit.ToString());
         builder.UseSetting("Auth:SecurityStampValidationIntervalSeconds", "0");
         builder.UseSetting("App:PublicBaseUrl", "https://daygrid.test");
+        builder.UseSetting("Email:AccountEmails:CooldownSeconds", "0");
+        builder.UseSetting("Email:AccountEmails:DailyLimitPerRecipient", "0");
         ConfigureSettings(builder);
 
         builder.ConfigureTestServices(services =>
@@ -70,8 +74,17 @@ public class IntegrationApiFactory : WebApplicationFactory<Program>
             services.AddSingleton<IAppClockFactory>(new AppClockFactory(new FrozenTimeProvider(FrozenNow), "Asia/Kolkata"));
             services.AddSingleton<IEmailSender>(Email);
             services.Configure<PasswordHasherOptions>(o => o.IterationCount = 1_000);
+
+            // As in Development / the desktop exe: the first account to confirm its email becomes
+            // Admin and claims the legacy rows (the default test user is that account).
+            foreach (var d in services.Where(d => d.ServiceType == typeof(BootstrapAdminPolicy)).ToList())
+                services.Remove(d);
+            services.AddSingleton(BootstrapPolicy());
         });
     }
+
+    /// <summary>The bootstrap-Admin policy for this host (tests of the other modes override it).</summary>
+    protected virtual BootstrapAdminPolicy BootstrapPolicy() => BootstrapAdminPolicy.FirstConfirmedUser();
 
     protected virtual int AuthPermitLimit => 100_000;
 

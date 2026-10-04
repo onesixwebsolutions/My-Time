@@ -12,4 +12,11 @@ public class AppUser : IdentityUser<Guid>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     public DateTimeOffset? LastLoginAt { get; set; }
+
+    /// <summary>
+    /// Disabled by an administrator (admin "lock"). Distinct from Identity's brute-force lockout
+    /// (LockoutEnd): a password reset ends a lockout but never re-enables a disabled account; only
+    /// an admin "unlock" does. Disabled accounts cannot sign in, reset their password or confirm.
+    /// </summary>
+    public bool IsDisabled { get; set; }
 }

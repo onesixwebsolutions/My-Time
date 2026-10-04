@@ -62,11 +62,11 @@ describe('AuthService', () => {
     expect(done).toBeTrue();
   });
 
-  it('confirmEmail() POSTs { userId, token }', () => {
-    auth.confirmEmail('u1', 'tok').subscribe();
+  it('confirmEmail() POSTs { userId, token, password }', () => {
+    auth.confirmEmail('u1', 'tok', 'pw').subscribe();
     const req = http.expectOne('/api/v1/auth/confirm-email');
     expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual({ userId: 'u1', token: 'tok' });
+    expect(req.request.body).toEqual({ userId: 'u1', token: 'tok', password: 'pw' });
     req.flush(null, { status: 204, statusText: 'No Content' });
   });
 

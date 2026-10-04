@@ -18,7 +18,10 @@ export interface AdminUserDto {
   displayName: string;
   roles: string[];
   emailConfirmed: boolean;
+  /** Disabled by an admin, or temporarily locked after failed sign-ins ("Unlock" clears both). */
   lockedOut: boolean;
+  /** Disabled by an admin (a password reset does not undo it). */
+  disabled: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }

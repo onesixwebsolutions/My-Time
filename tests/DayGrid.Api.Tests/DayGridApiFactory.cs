@@ -29,6 +29,11 @@ public class DayGridApiFactory : WebApplicationFactory<Program>
 
     public FakeEmailSender Email { get; } = new();
 
+    public DayGridApiFactory()
+    {
+        Email.SettleWith(() => Services.GetRequiredService<AccountEmailQueue>().WaitForIdleAsync(TimeSpan.FromSeconds(10)));
+    }
+
     static DayGridApiFactory()
     {
         // Program.cs reads Database:Mode / connection string from builder.Configuration *before*
@@ -56,6 +61,9 @@ public class DayGridApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("RateLimiting:Auth:PermitLimit", AuthPermitLimit.ToString());
         builder.UseSetting("Auth:SecurityStampValidationIntervalSeconds", "0"); // revocation is immediate in tests
         builder.UseSetting("App:PublicBaseUrl", "https://daygrid.test");
+        // Many tests mail one address repeatedly; the flood-protection tests opt back in.
+        builder.UseSetting("Email:AccountEmails:CooldownSeconds", "0");
+        builder.UseSetting("Email:AccountEmails:DailyLimitPerRecipient", "0");
         ConfigureSettings(builder);
 
         builder.ConfigureTestServices(services =>

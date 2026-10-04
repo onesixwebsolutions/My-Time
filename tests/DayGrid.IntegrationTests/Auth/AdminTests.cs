@@ -42,6 +42,7 @@ public class AdminTests : IntegrationTestBase
         Assert.Equal(new[] { "User" }, bobDto.GetProperty("roles").EnumerateArray().Select(r => r.GetString()));
         Assert.True(bobDto.GetProperty("emailConfirmed").GetBoolean());
         Assert.False(bobDto.GetProperty("lockedOut").GetBoolean());
+        Assert.False(bobDto.GetProperty("disabled").GetBoolean());
         Assert.True(bobDto.TryGetProperty("createdAt", out _));
         Assert.NotEqual(System.Text.Json.JsonValueKind.Null, bobDto.GetProperty("lastLoginAt").ValueKind);
 
@@ -147,11 +148,57 @@ public class AdminTests : IntegrationTestBase
             Assert.Equal("locked_out", await CodeAsync(await bob.LoginAsync(bobEmail, TestAccounts.Password)));
             var listed = (await GetOkAsync($"{Admin}/users")).GetProperty("items").EnumerateArray().Single(u => Id(u) == bobId);
             Assert.True(listed.GetProperty("lockedOut").GetBoolean());
+            Assert.True(listed.GetProperty("disabled").GetBoolean());
 
             await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PostAsync($"{Admin}/users/{bobId}/unlock", null));
             await AssertStatusAsync(HttpStatusCode.OK, await bob.LoginAsync(bobEmail, TestAccounts.Password));
             await AssertStatusAsync(HttpStatusCode.OK, await bob.Client.GetAsync("/api/v1/tasks"));
         }
+    }
+
+    [Fact]
+    public async Task Lock_SurvivesAPasswordReset_AndBlocksResetAndLoginWithoutRevealingIt()
+    {
+        var (bob, bobId, bobEmail) = await SignInAnotherUserAsync("bob");
+        bob.Dispose();
+        using var anonymous = new TestSession(Fx.Factory);
+        (await anonymous.PrimeAsync()).Dispose();
+
+        // Bob asks for a reset link before the admin disables him.
+        await AssertStatusAsync(HttpStatusCode.Accepted, await anonymous.Client.PostAsJsonAsync("/api/v1/auth/forgot-password", new { email = bobEmail }));
+        var (email, token) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, bobEmail, "reset-password");
+        await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PostAsync($"{Admin}/users/{bobId}/lock", null));
+
+        // The outstanding token is dead (stamp rotated) and the reset cannot re-enable the account.
+        Assert.Equal("invalid_token", await CodeAsync(await anonymous.Client.PostAsJsonAsync("/api/v1/auth/reset-password",
+            new { email, token, newPassword = "a brand new passphrase" })));
+
+        // forgot-password still answers 202 {} but mails nothing to a disabled account.
+        await Fx.Factory.Email.SettleAsync();
+        Fx.Factory.Email.Reset();
+        var forgot = await anonymous.Client.PostAsJsonAsync("/api/v1/auth/forgot-password", new { email = bobEmail });
+        await AssertStatusAsync(HttpStatusCode.Accepted, forgot);
+        Assert.Equal("{}", (await TestAccounts.JsonAsync(forgot)).GetRawText());
+        await Fx.Factory.Email.SettleAsync();
+        Assert.Empty(Fx.Factory.Email.SentTo(bobEmail));
+
+        // Wrong password: the same invalid_credentials anyone gets; right password: locked_out.
+        Assert.Equal("invalid_credentials", await CodeAsync(await anonymous.LoginAsync(bobEmail, "not bob's password")));
+        Assert.Equal("locked_out", await CodeAsync(await anonymous.LoginAsync(bobEmail, TestAccounts.Password)));
+
+        // Ending the brute-force lockout state (what a password reset does) does not re-enable him.
+        await using (var db = NewSystemDb())
+        {
+            var user = await db.Users.SingleAsync(u => u.Id == bobId);
+            Assert.True(user.IsDisabled);
+            user.LockoutEnd = null;
+            user.AccessFailedCount = 0;
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal("locked_out", await CodeAsync(await anonymous.LoginAsync(bobEmail, TestAccounts.Password)));
+
+        await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PostAsync($"{Admin}/users/{bobId}/unlock", null));
+        await AssertStatusAsync(HttpStatusCode.OK, await anonymous.LoginAsync(bobEmail, TestAccounts.Password));
     }
 
     [Fact]
@@ -204,13 +251,15 @@ public class AdminTests : IntegrationTestBase
         Guid pendingId;
         await using (var db = NewSystemDb())
             pendingId = (await db.Users.SingleAsync(u => u.Email == pending)).Id;
+        await Fx.Factory.Email.SettleAsync();
         Fx.Factory.Email.Reset();
 
         await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PostAsync($"{Admin}/users/{pendingId}/resend-confirmation", null));
-        var (userId, _) = TestAccounts.ExtractLink(Fx.Factory.Email, pending, "confirm-email");
+        var (userId, _) = await TestAccounts.ExtractLinkAsync(Fx.Factory.Email, pending, "confirm-email");
         Assert.Equal(pendingId, Guid.Parse(userId));
 
         await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PostAsync($"{Admin}/users/{UserId}/resend-confirmation", null));
+        await Fx.Factory.Email.SettleAsync();
         Assert.Empty(Fx.Factory.Email.SentTo(UserEmail));
         await AssertStatusAsync(HttpStatusCode.NotFound, await Client.PostAsync($"{Admin}/users/{Guid.NewGuid()}/resend-confirmation", null));
     }

@@ -14,9 +14,10 @@ namespace DayGrid.Api.Auth;
 public sealed record UserDto(
     Guid Id, string Email, string DisplayName, string TimeZone, IReadOnlyList<string> Roles, bool EmailConfirmed, DateTimeOffset CreatedAt);
 
-/// <summary>AdminUserDto from the auth contract.</summary>
+/// <summary>AdminUserDto from the auth contract. <c>LockedOut</c>: disabled by an admin or in a
+/// brute-force lockout; <c>Disabled</c>: disabled by an admin (survives a password reset).</summary>
 public sealed record AdminUserDto(
-    Guid Id, string Email, string DisplayName, IReadOnlyList<string> Roles, bool EmailConfirmed, bool LockedOut,
+    Guid Id, string Email, string DisplayName, IReadOnlyList<string> Roles, bool EmailConfirmed, bool LockedOut, bool Disabled,
     DateTimeOffset CreatedAt, DateTimeOffset? LastLoginAt);
 
 /// <summary>Shared helpers for the auth/admin endpoints: problem responses, the XSRF cookie,
