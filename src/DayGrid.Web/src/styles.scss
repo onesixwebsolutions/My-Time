@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+// ---------------------------------------------------------------------------
+// Color tokens — copied verbatim from DayGrid-Mockup.html's :root and
+// [data-theme="light"] blocks. Dark is the default (defined on :root),
+// light is an override activated by html[data-theme="light"] — same
+// attribute-driven theming strategy as the mockup. The AppShell's theme
+// toggle flips document.documentElement.dataset.theme between the two.
+// ---------------------------------------------------------------------------
+:root {
+  --surface: #0f1117;
+  --raised: #171a21;
+  --raised2: #1d212a;
+  --border: #262b36;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #6366f1;
+  --accent-soft: rgba(99, 102, 241, 0.14);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+
+  --work: #3b82f6;
+  --personal: #a855f7;
+  --health: #22c55e;
+  --learning: #f59e0b;
+  --break: #14b8a6;
+  --sleep: #64748b;
+  --other: #94a3b8;
+
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --r: 12px;
+}
+
+html[data-theme='light'] {
+  --surface: #f1f5f9;
+  --raised: #ffffff;
+  --raised2: #f8fafc;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--surface);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.25s, color 0.25s;
+}
+
+// Tabular numerals so clock/timer digits don't jitter as they change.
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'cv05' 1;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,277 @@
+import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+
+import { NotificationLogEntry, NotificationsApi } from '../core/api/notifications.api';
+
+// Logo: the sidebar tile keeps its 32px / 9px-radius footprint and the accent->purple-500
+// gradient; only the "D" glyph is replaced by the One Six constellation mark (inline so it
+// inherits no external asset). Standalone files live in src/assets/brand/.
+//
+// Sidebar + topbar chrome translated from DayGrid-Mockup.html's <aside class="sidebar">
+// and <header class="topbar"> markup. Layout uses Tailwind utilities; color values
+// still come from the CSS custom properties in styles.scss via the tailwind.config.js
+// var(...) mapping, so this component's classes (bg-raised, border-border, text-muted,
+// etc.) automatically follow the active theme.
+const POLL_INTERVAL_MS = 20_000;
+
+@Component({
+  selector: 'app-shell',
+  standalone: true,
+  imports: [RouterLink, RouterLinkActive, RouterOutlet],
+  template: `
+    <div class="grid min-h-screen grid-cols-[232px_1fr]">
+      <aside class="sticky top-0 flex h-screen flex-col gap-1 border-r border-border bg-raised p-3.5">
+        <div class="flex items-center gap-2.5 px-2 pb-5 pt-1">
+          <div
+            class="grid h-8 w-8 place-items-center rounded-[9px] bg-gradient-to-br from-accent to-purple-500 shadow-[0_4px_12px_rgba(99,102,241,.35)]"
+          >
+            <svg
+              viewBox="0 0 128 128"
+              class="h-[21px] w-[21px]"
+              fill="#ffffff"
+              role="img"
+              aria-label="One Six"
+            >
+              <circle cx="64" cy="24" r="9.5" />
+              <circle cx="98.64" cy="44" r="9.5" />
+              <circle cx="98.64" cy="84" r="9.5" />
+              <circle cx="64" cy="104" r="9.5" />
+              <circle cx="29.36" cy="84" r="9.5" />
+              <circle cx="29.36" cy="44" r="9.5" />
+              <circle cx="64" cy="64" r="15" />
+            </svg>
+          </div>
+          <div>
+            <b class="block text-[16px] tracking-tight text-text">One Six</b>
+            <span class="block text-[11px] font-medium text-muted">Checklist &amp; Timetable</span>
+          </div>
+        </div>
+
+        <a
+          routerLink="/today"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Today</a
+        >
+        <a
+          routerLink="/checklists"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Checklists</a
+        >
+        <a
+          routerLink="/timetable"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Timetable</a
+        >
+        <a
+          routerLink="/upcoming"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Upcoming</a
+        >
+        <a
+          routerLink="/tasks"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Tasks</a
+        >
+        <a
+          routerLink="/expenses"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Expenses</a
+        >
+
+        <div class="px-2.5 pb-1.5 pt-3.5 text-[10.5px] font-bold uppercase tracking-widest text-muted">
+          Insights
+        </div>
+        <a
+          routerLink="/calendar"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Calendar</a
+        >
+        <a
+          routerLink="/insights"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Streaks</a
+        >
+
+        <div class="flex-1"></div>
+
+        <a
+          routerLink="/settings"
+          routerLinkActive="bg-accent-soft text-accent font-semibold"
+          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          >Settings</a
+        >
+      </aside>
+
+      <div class="flex min-w-0 flex-col">
+        <header
+          class="sticky top-0 z-20 flex h-[58px] items-center gap-3 border-b border-border bg-raised px-5"
+        >
+          <div
+            class="flex max-w-[340px] flex-1 items-center gap-2 rounded-[9px] border border-border bg-surface px-3 py-1.5 text-[13px] text-muted"
+          >
+            <span>Search tasks, blocks, checklists…</span>
+            <kbd class="ml-auto rounded border border-border px-1 text-[10px]">/</kbd>
+          </div>
+          <div class="flex-1"></div>
+
+          <div class="relative">
+            <button
+              type="button"
+              (click)="togglePanel()"
+              class="relative grid h-[34px] w-[34px] place-items-center rounded-[9px] text-muted transition-colors hover:bg-raised2 hover:text-text"
+              title="Notifications"
+            >
+              🔔
+              @if (unreadCount() > 0) {
+                <span
+                  class="absolute right-0.5 top-0.5 grid h-[15px] min-w-[15px] place-items-center rounded-full border-2 border-raised bg-danger px-1 text-[9.5px] font-bold text-white"
+                >
+                  {{ unreadCount() }}
+                </span>
+              }
+            </button>
+
+            @if (panelOpen()) {
+              <div class="fixed inset-0 z-10" (click)="panelOpen.set(false)"></div>
+              <div class="absolute right-0 top-[42px] z-20 w-[340px] overflow-hidden rounded-card border border-border bg-raised shadow-[var(--shadow)]">
+                <div class="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
+                  <h3 class="text-[11.5px] font-bold uppercase tracking-wider text-muted">Notifications</h3>
+                  @if (unreadCount() > 0) {
+                    <button type="button" (click)="markAllRead()" class="ml-auto text-[11px] font-semibold text-accent hover:underline">
+                      Mark all read
+                    </button>
+                  }
+                </div>
+                <div class="max-h-[400px] overflow-y-auto">
+                  @if (loadingNotifications()) {
+                    <div class="px-3.5 py-6 text-center text-[12.5px] text-muted">Loading…</div>
+                  } @else if (notifications().length === 0) {
+                    <div class="px-3.5 py-6 text-center text-[12.5px] text-muted">No notifications yet.</div>
+                  } @else {
+                    @for (n of notifications(); track n.id) {
+                      <button
+                        type="button"
+                        (click)="markRead(n)"
+                        class="flex w-full items-start gap-2 border-b border-border px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-raised2"
+                      >
+                        <span
+                          class="mt-1.5 h-1.5 w-1.5 flex-none rounded-full"
+                          [class.bg-accent]="!n.readAtUtc"
+                          [class.bg-transparent]="!!n.readAtUtc"
+                        ></span>
+                        <div class="min-w-0 flex-1">
+                          <b class="block text-[12.5px] font-semibold" [class.text-muted]="!!n.readAtUtc">{{ n.title }}</b>
+                          <span class="mt-0.5 block text-[11.5px] text-muted">{{ n.body }}</span>
+                          <span class="mt-0.5 block text-[10.5px] text-muted">
+                            {{ n.channel }}{{ n.error ? ' · failed' : '' }} · {{ relativeTime(n.createdAtUtc) }}
+                          </span>
+                        </div>
+                      </button>
+                    }
+                  }
+                </div>
+              </div>
+            }
+          </div>
+
+          <button
+            type="button"
+            (click)="toggleTheme()"
+            class="grid h-[34px] w-[34px] place-items-center rounded-[9px] text-muted transition-colors hover:bg-raised2 hover:text-text"
+            title="Toggle theme"
+          >
+            {{ theme() === 'dark' ? '☾' : '☀' }}
+          </button>
+        </header>
+
+        <div class="mx-auto w-full max-w-[1400px] flex-1 px-6 py-5 pb-16">
+          <router-outlet></router-outlet>
+        </div>
+      </div>
+    </div>
+  `
+})
+export class AppShellComponent implements OnInit, OnDestroy {
+  private readonly api = inject(NotificationsApi);
+  private pollHandle?: ReturnType<typeof setInterval>;
+
+  protected readonly theme = signal<'dark' | 'light'>(
+    (document.documentElement.dataset['theme'] as 'dark' | 'light') ?? 'dark'
+  );
+
+  protected readonly notifications = signal<NotificationLogEntry[]>([]);
+  protected readonly unreadCount = signal(0);
+  protected readonly loadingNotifications = signal(false);
+  protected readonly panelOpen = signal(false);
+
+  ngOnInit(): void {
+    this.refreshUnreadCount();
+    this.pollHandle = setInterval(() => this.refreshUnreadCount(), POLL_INTERVAL_MS);
+  }
+
+  ngOnDestroy(): void {
+    if (this.pollHandle) clearInterval(this.pollHandle);
+  }
+
+  protected toggleTheme(): void {
+    const next = this.theme() === 'dark' ? 'light' : 'dark';
+    this.theme.set(next);
+    document.documentElement.dataset['theme'] = next;
+  }
+
+  protected togglePanel(): void {
+    const opening = !this.panelOpen();
+    this.panelOpen.set(opening);
+    if (opening) this.loadNotifications();
+  }
+
+  private refreshUnreadCount(): void {
+    this.api.list(true, 100).subscribe({
+      next: (unread) => this.unreadCount.set(unread.length),
+      error: () => void 0
+    });
+  }
+
+  private loadNotifications(): void {
+    this.loadingNotifications.set(true);
+    this.api.list(false, 20).subscribe({
+      next: (list) => {
+        this.notifications.set(list);
+        this.loadingNotifications.set(false);
+      },
+      error: () => this.loadingNotifications.set(false)
+    });
+  }
+
+  protected markRead(n: NotificationLogEntry): void {
+    if (n.readAtUtc) return;
+    this.notifications.update((list) => list.map((x) => (x.id === n.id ? { ...x, readAtUtc: new Date().toISOString() } : x)));
+    this.unreadCount.update((c) => Math.max(0, c - 1));
+    this.api.markRead(n.id).subscribe({ error: () => this.refreshUnreadCount() });
+  }
+
+  protected markAllRead(): void {
+    const now = new Date().toISOString();
+    this.notifications.update((list) => list.map((x) => ({ ...x, readAtUtc: x.readAtUtc ?? now })));
+    this.unreadCount.set(0);
+    this.api.markAllRead().subscribe({ error: () => this.refreshUnreadCount() });
+  }
+
+  protected relativeTime(iso: string): string {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const minutes = Math.round(diffMs / 60000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.round(hours / 24)}d ago`;
+  }
+}

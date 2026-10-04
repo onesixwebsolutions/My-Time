@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      microsoft:
+        patterns: ["Microsoft.*", "System.*"]
+      testing:
+        patterns: ["xunit*", "Microsoft.NET.Test.Sdk", "coverlet*", "Moq", "NSubstitute", "FluentAssertions"]
+
+  - package-ecosystem: npm
+    directory: /src/DayGrid.Web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      angular:
+        patterns: ["@angular/*", "@angular-devkit/*"]
+    ignore:
+      # Major Angular upgrades need `ng update` migrations — do them manually.
+      - dependency-name: "@angular/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@angular-devkit/*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

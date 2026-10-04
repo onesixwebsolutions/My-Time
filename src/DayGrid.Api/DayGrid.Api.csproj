@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DayGrid.Api</RootNamespace>
+    <UserSecretsId>daygrid-api-secrets</UserSecretsId>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DayGrid.Infrastructure\DayGrid.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.10" />
+    <PackageReference Include="MysticMind.PostgresEmbed" Version="4.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.10" />
+  </ItemGroup>
+
+  <!-- Launcher that sets the real connection string before starting the exe — see run.bat. -->
+  <ItemGroup>
+    <None Include="run.bat" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    Schema for the embedded-Postgres first-run bootstrap (see EmbeddedDatabase.cs) — needs to
+    ship next to the exe since a published app has no access to the source tree's db/ folder.
+  -->
+  <ItemGroup>
+    <None Include="..\..\db\init.sql" Link="db\init.sql" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    Single-executable publishing: `dotnet publish` on this project alone produces a fully
+    self-contained deployment that serves the Angular SPA and the API from one process/one port
+    (see UseStaticFiles/MapFallbackToFile in Program.cs). These two targets do the Angular half
+    automatically so a self-contained, single-file `dotnet publish` is the only command needed
+    (see README's "Publishing as a single executable" section for the exact flags) — no
+    separate `ng build` step.
+
+    BuildAndCopyAngular runs npm install (only if node_modules is missing) + a production
+    `ng build`, before MSBuild's normal Publish pipeline starts.
+
+    CopyAngularDist runs after Publish and copies the built output straight into
+    $(PublishDir)wwwroot. It targets AfterTargets="Publish" (not the wwwroot Content-item
+    glob) because that glob is evaluated before this target ever runs, so files that don't
+    exist yet at evaluation time would silently be skipped from the publish output.
+  -->
+  <Target Name="BuildAndCopyAngular" BeforeTargets="Publish">
+    <Exec Command="npm install" WorkingDirectory="../DayGrid.Web" Condition="!Exists('../DayGrid.Web/node_modules')" />
+    <Exec Command="npm run build -- --configuration production" WorkingDirectory="../DayGrid.Web" />
+  </Target>
+
+  <Target Name="CopyAngularDist" AfterTargets="Publish">
+    <ItemGroup>
+      <AngularDist Include="../DayGrid.Web/dist/daygrid-web/browser/**" />
+    </ItemGroup>
+    <RemoveDir Directories="$(PublishDir)wwwroot" Condition="Exists('$(PublishDir)wwwroot')" />
+    <Copy SourceFiles="@(AngularDist)" DestinationFolder="$(PublishDir)wwwroot\%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

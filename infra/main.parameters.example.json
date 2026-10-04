@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": {
+      "value": "daygrid"
+    },
+    "appServiceSku": {
+      "value": "B1"
+    },
+    "postgresAdminLogin": {
+      "value": "daygridadmin"
+    },
+    "emailHost": {
+      "value": "smtp.gmail.com"
+    },
+    "emailPort": {
+      "value": 587
+    },
+    "emailUseStartTls": {
+      "value": true
+    },
+    "emailUser": {
+      "value": "you@gmail.com"
+    },
+    "emailFromName": {
+      "value": "DayGrid"
+    },
+    "timeZone": {
+      "value": "Asia/Kolkata"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+publish/
+*.binlog
+
+## Angular / Node
+node_modules/
+src/DayGrid.Web/dist/
+src/DayGrid.Web/.angular/
+coverage/
+
+## Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+Thumbs.db
+.DS_Store
+
+## Local / secrets
+.env
+*.local.json
+appsettings.*.local.json
+.claude/scheduled_tasks.lock
