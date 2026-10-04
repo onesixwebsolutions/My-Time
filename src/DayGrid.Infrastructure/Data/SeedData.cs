@@ -8,7 +8,7 @@ namespace DayGrid.Infrastructure.Data;
 /// <summary>
 /// Dev-only seed data — two templates, three checklists with items spanning every anchor type
 /// and several recurrence types, a handful of future tasks with reminders, and a few standalone
-/// simple tasks. Called from Program.cs only when <c>IsDevelopment()</c>. Flavour text mirrors
+/// simple tasks. Called from Program.cs only when <c>IsDevelopment()</c> and the database has no accounts yet. Flavour text mirrors
 /// the plan and the HTML mockup (DayGrid-Mockup.html) so screenshots line up with real data.
 /// </summary>
 public static class SeedData
@@ -16,8 +16,11 @@ public static class SeedData
     public static void Seed(AppDbContext db)
     {
         // Idempotent: never overwrite existing data, whether that's a previous seed run or
-        // real usage.
-        if (db.Checklists.Any() || db.TimetableTemplates.Any())
+        // real usage — and never once an account exists. Rows are inserted unowned (legacy), so
+        // the first account to register claims them. Pass a system (unfiltered) context.
+        if (db.Users.Any()
+            || db.Checklists.IgnoreQueryFilters().Any()
+            || db.TimetableTemplates.IgnoreQueryFilters().Any())
             return;
 
         var now = DateTimeOffset.UtcNow;

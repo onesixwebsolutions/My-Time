@@ -11,6 +11,8 @@ REM This script's only real job is giving you a predictable URL instead of a ran
 setlocal
 set "SCRIPT_DIR=%~dp0"
 set "ASPNETCORE_URLS=http://localhost:5080"
+REM Base URL used in account emails (email confirmation / password reset links).
+set "App__PublicBaseUrl=http://localhost:5080"
 
 REM --- Optional: point at a real Postgres instance instead of the built-in one ---
 REM Uncomment both lines below and fill in your own server to skip the embedded database

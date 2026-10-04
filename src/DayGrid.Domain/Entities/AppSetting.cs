@@ -1,12 +1,19 @@
+using System.Text.Json.Serialization;
+
 namespace DayGrid.Domain.Entities;
 
 /// <summary>
-/// Single-row settings table. <see cref="Id"/> is fixed to 1 (int PK, CHECK id = 1) — this is
-/// not a Guid entity like the rest of the domain, by design.
+/// Per-user settings: exactly one row per account (unique user_id). <see cref="Id"/> is a
+/// database-generated int (identity) — not a Guid entity like the rest of the domain, by design.
+/// <see cref="TimeZone"/> is the user's IANA time zone and drives every "today"/"now" computation.
 /// </summary>
-public class AppSetting
+public class AppSetting : IUserOwned
 {
-    public int Id { get; set; } = 1;
+    public int Id { get; set; }
+
+    /// <summary>Owning account. Null only for legacy rows not yet claimed by the first registered user.</summary>
+    [JsonIgnore]
+    public Guid? UserId { get; set; }
 
     public string TimeZone { get; set; } = "Asia/Kolkata";
 

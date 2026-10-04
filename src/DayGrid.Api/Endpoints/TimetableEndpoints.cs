@@ -166,8 +166,12 @@ public static class TimetableEndpoints
     private static void MapBlocks(IEndpointRouteBuilder app)
     {
         app.MapGet("/api/v1/timetable/templates/{id:guid}/blocks", async (AppDbContext db, Guid id, CancellationToken ct) =>
-            Results.Ok(await db.TimetableBlocks.AsNoTracking().Where(b => b.TemplateId == id).OrderBy(b => b.StartTime).ToListAsync(ct)))
-            .WithTags("Timetable").WithName("ListBlocks");
+        {
+            if (!await db.TimetableTemplates.AnyAsync(t => t.Id == id, ct))
+                return Results.NotFound();
+            return Results.Ok(await db.TimetableBlocks.AsNoTracking().Where(b => b.TemplateId == id).OrderBy(b => b.StartTime).ToListAsync(ct));
+        })
+        .WithTags("Timetable").WithName("ListBlocks");
 
         app.MapPost("/api/v1/timetable/templates/{id:guid}/blocks", async (AppDbContext db, Guid id, CreateBlockRequest request, CancellationToken ct) =>
         {

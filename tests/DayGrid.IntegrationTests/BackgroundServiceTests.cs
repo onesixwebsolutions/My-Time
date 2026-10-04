@@ -62,8 +62,10 @@ public class BackgroundServiceTests : IntegrationTestBase
         Assert.Equal("Due 2026-10-01 at 18:00", logs[0].Body);
         Assert.Equal("Scheduled for 09:00", logs[1].Body);
 
+        // Sent to the owner's confirmed account address.
         var email = Assert.Single(Fx.Factory.Email.Sent);
-        Assert.Equal("onesixwebsolutions@gmail.com", email.To);
+        Assert.Equal(UserEmail, email.To);
+        Assert.All(logs, l => Assert.Equal(UserId, l.UserId));
 
         // Second tick: nothing left to send.
         await InvokeTickAsync(service, "ProcessDueRemindersAsync");
@@ -88,30 +90,72 @@ public class BackgroundServiceTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task DailyDigest_OneTick_DoesNotThrow_WithAndWithoutDigestTime()
+    public async Task DailyDigest_FiresPerUser_InThatUsersOwnTimeZone_OncePerDay()
     {
-        var clock = Fx.Factory.Services.GetRequiredService<IAppClock>();
-        var service = new DailyDigestService(ScopeFactory, NullLogger<DailyDigestService>.Instance, clock);
+        var factory = Fx.Factory.Services.GetRequiredService<IAppClockFactory>();
+        var service = new DailyDigestService(ScopeFactory, NullLogger<DailyDigestService>.Instance, factory);
 
-        await using (var db = NewDb())
+        var (other, otherId, _) = await SignInAnotherUserAsync();
+        other.Dispose();
+        const string otherZone = "America/New_York";
+        var istNow = factory.ForTimeZone("Asia/Kolkata").Now;
+        var nyNow = factory.ForTimeZone(otherZone).Now;
+        Assert.NotEqual(istNow.Hour, nyNow.Hour);
+
+        await using (var db = NewSystemDb())
         {
-            var settings = await db.AppSettings.SingleAsync();
-            settings.DailyDigestTime = TimeOnly.FromDateTime(clock.Now.DateTime); // fires this minute
+            var mine = await db.AppSettings.SingleAsync(s => s.UserId == UserId);
+            mine.DailyDigestTime = TimeOnly.FromDateTime(istNow.DateTime); // fires this minute in IST
+            var theirs = await db.AppSettings.SingleAsync(s => s.UserId == otherId);
+            theirs.TimeZone = otherZone;
+            theirs.DailyDigestTime = TimeOnly.FromDateTime(istNow.DateTime); // same wall time, but not "now" in New York
             await db.SaveChangesAsync();
         }
+
         await InvokeTickAsync(service, "CheckAndFireAsync");
+        Assert.Equal(new[] { UserId }, service.LastTickFired);
+
         await InvokeTickAsync(service, "CheckAndFireAsync"); // same day: guarded
+        Assert.Empty(service.LastTickFired);
 
-        await using (var db = NewDb())
+        await using (var db = NewSystemDb())
         {
-            var settings = await db.AppSettings.SingleAsync();
-            settings.DailyDigestTime = null;
+            var theirs = await db.AppSettings.SingleAsync(s => s.UserId == otherId);
+            theirs.DailyDigestTime = TimeOnly.FromDateTime(nyNow.DateTime); // now it is their minute
             await db.SaveChangesAsync();
         }
         await InvokeTickAsync(service, "CheckAndFireAsync");
+        Assert.Equal(new[] { otherId }, service.LastTickFired);
 
-        await using (var db = NewDb())
-            await db.AppSettings.ExecuteDeleteAsync(); // no settings row at all
+        await using (var db = NewSystemDb())
+            await db.AppSettings.ExecuteDeleteAsync(); // no settings rows at all
         await InvokeTickAsync(service, "CheckAndFireAsync");
+        Assert.Empty(service.LastTickFired);
+    }
+
+    [Fact]
+    public async Task ReminderDispatcher_SendsEachUsersRemindersToThatUserOnly()
+    {
+        await SeedRemindersAsync(); // test user's
+        var (other, otherId, otherEmail) = await SignInAnotherUserAsync();
+        other.Dispose();
+        await using (var db = Fx.CreateUserDbContext(otherId))
+        {
+            var task = new FutureTask { Title = "Their task", DueDate = new DateOnly(2026, 10, 1) };
+            db.AddRange(task, new Reminder { FutureTaskId = task.Id, OffsetMinutes = 0, FireAtUtc = DateTimeOffset.UtcNow.AddMinutes(-2), Channels = NotificationChannel.InApp | NotificationChannel.Email });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new ReminderDispatcherService(ScopeFactory, NullLogger<ReminderDispatcherService>.Instance);
+        await InvokeTickAsync(service, "ProcessDueRemindersAsync");
+
+        Assert.Equal(new[] { otherEmail, UserEmail }.OrderBy(e => e), Fx.Factory.Email.Sent.Select(m => m.To).OrderBy(e => e));
+        Assert.Contains(Fx.Factory.Email.Sent, m => m.To == otherEmail && m.Subject == "Their task");
+        Assert.DoesNotContain(Fx.Factory.Email.Sent, m => m.To == UserEmail && m.Subject == "Their task");
+
+        await using var sys = NewSystemDb();
+        var theirLogs = await sys.NotificationLogs.Where(n => n.UserId == otherId).ToListAsync();
+        Assert.Equal(new[] { "Their task" }, theirLogs.Select(l => l.Title));
+        Assert.DoesNotContain(await sys.NotificationLogs.Where(n => n.UserId == UserId).Select(n => n.Title).ToListAsync(), t => t == "Their task");
     }
 }

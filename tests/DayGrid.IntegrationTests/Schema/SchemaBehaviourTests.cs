@@ -10,9 +10,9 @@ using Xunit;
 
 namespace DayGrid.IntegrationTests.Schema;
 
-public class SchemaBootstrapperTests : IntegrationTestBase
+public class SchemaMigratorTests : IntegrationTestBase
 {
-    public SchemaBootstrapperTests(PostgresFixture fixture) : base(fixture) { }
+    public SchemaMigratorTests(PostgresFixture fixture) : base(fixture) { }
 
     private static async Task<long> ScalarAsync(string connectionString, string sql)
     {
@@ -22,27 +22,49 @@ public class SchemaBootstrapperTests : IntegrationTestBase
         return Convert.ToInt64(await cmd.ExecuteScalarAsync());
     }
 
+    private static async Task ExecuteAsync(string connectionString, string sql)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, connection);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     private const string CountTables =
         "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'";
 
+    // 15 domain tables + 7 Identity tables + data_protection_keys + schema_migrations.
+    private const int ExpectedTableCount = 24;
+
+    private static IReadOnlyList<string> AllVersions => SchemaMigrator.LoadEmbedded().Select(m => m.Version).ToList();
+
     [Fact]
-    public async Task EnsureSchema_AppliesOnEmptyDatabase_ThenIsANoOp()
+    public void EmbeddedMigrations_AreOrdered_StartAtBaseline_AndIncludeAuth()
     {
-        var cs = await Fx.CreateEmptyDatabaseAsync("boot");
+        var versions = AllVersions;
+        Assert.Equal(new[] { "0001", "0002" }, versions);
+        Assert.Contains("CREATE TABLE users", SchemaMigrator.LoadEmbedded()[1].Sql);
+    }
+
+    [Fact]
+    public async Task Migrate_AppliesEverythingOnEmptyDatabase_ThenIsANoOp()
+    {
+        var cs = await Fx.CreateEmptyDatabaseAsync("mig");
         try
         {
             Assert.Equal(0, await ScalarAsync(cs, CountTables));
 
-            Assert.True(await SchemaBootstrapper.EnsureSchemaAsync(cs, PostgresFixture.InitSqlPath, NullLogger.Instance));
-            Assert.Equal(15, await ScalarAsync(cs, CountTables));
-            Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM app_settings"));
+            Assert.Equal(AllVersions, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Equal(ExpectedTableCount, await ScalarAsync(cs, CountTables));
+            Assert.Equal(AllVersions, await SchemaMigrator.GetAppliedVersionsAsync(cs));
+            Assert.Equal(2, await ScalarAsync(cs, "SELECT count(*) FROM roles WHERE name IN ('User','Admin')"));
 
-            await ScalarAsync(cs, "INSERT INTO simple_tasks (title) VALUES ('survives a second bootstrap') RETURNING 1");
+            await ScalarAsync(cs, "INSERT INTO simple_tasks (title) VALUES ('survives a second run') RETURNING 1");
 
-            Assert.False(await SchemaBootstrapper.EnsureSchemaAsync(cs, PostgresFixture.InitSqlPath, NullLogger.Instance));
-            Assert.Equal(15, await ScalarAsync(cs, CountTables));
+            Assert.Empty(await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Equal(ExpectedTableCount, await ScalarAsync(cs, CountTables));
             Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM simple_tasks"));
-            Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM app_settings"));
+            Assert.Equal(2, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
         }
         finally
         {
@@ -51,35 +73,39 @@ public class SchemaBootstrapperTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task EnsureSchema_FailingScript_RollsBackCompletely()
+    public async Task Migrate_ConcurrentStarts_ApplyEachMigrationOnce()
     {
-        var cs = await Fx.CreateEmptyDatabaseAsync("bootfail");
-        var brokenScript = Path.Combine(Path.GetTempPath(), $"daygrid-broken-{Guid.NewGuid():N}.sql");
+        var cs = await Fx.CreateEmptyDatabaseAsync("migpar");
         try
         {
-            await File.WriteAllTextAsync(brokenScript,
-                await File.ReadAllTextAsync(PostgresFixture.InitSqlPath) + "\nSELECT this_is_not_valid_sql(;\n");
-
-            await Assert.ThrowsAsync<PostgresException>(() =>
-                SchemaBootstrapper.EnsureSchemaAsync(cs, brokenScript, NullLogger.Instance));
-
-            Assert.Equal(0, await ScalarAsync(cs, CountTables));
+            var runs = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => SchemaMigrator.MigrateAsync(cs, NullLogger.Instance))));
+            Assert.Equal(AllVersions, runs.SelectMany(r => r).OrderBy(v => v));
+            Assert.Equal(2, await ScalarAsync(cs, "SELECT count(*) FROM schema_migrations"));
         }
         finally
         {
-            File.Delete(brokenScript);
             await Fx.DropDatabaseAsync(cs);
         }
     }
 
     [Fact]
-    public async Task EnsureSchema_MissingScriptOnEmptyDatabase_ThrowsFileNotFound()
+    public async Task Migrate_FailingScript_RollsBackThatMigrationCompletely()
     {
-        var cs = await Fx.CreateEmptyDatabaseAsync("bootmissing");
+        var cs = await Fx.CreateEmptyDatabaseAsync("migfail");
         try
         {
-            await Assert.ThrowsAsync<FileNotFoundException>(() =>
-                SchemaBootstrapper.EnsureSchemaAsync(cs, Path.Combine(Path.GetTempPath(), "no-such-init.sql"), NullLogger.Instance));
+            var real = SchemaMigrator.LoadEmbedded();
+            var broken = new[] { real[0], real[1] with { Sql = real[1].Sql + "\nSELECT this_is_not_valid_sql(;\n" } };
+
+            await Assert.ThrowsAsync<PostgresException>(() => SchemaMigrator.MigrateAsync(cs, broken, NullLogger.Instance));
+
+            // 0001 committed on its own; nothing of 0002 survived.
+            Assert.Equal(new[] { "0001" }, await SchemaMigrator.GetAppliedVersionsAsync(cs));
+            Assert.Equal(0, await ScalarAsync(cs, "SELECT count(*) FROM information_schema.tables WHERE table_name = 'users'"));
+            Assert.Equal(0, await ScalarAsync(cs, "SELECT count(*) FROM information_schema.columns WHERE table_name = 'checklists' AND column_name = 'user_id'"));
+
+            // ...and the real migration applies cleanly afterwards.
+            Assert.Equal(new[] { "0002" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
         }
         finally
         {
@@ -88,20 +114,91 @@ public class SchemaBootstrapperTests : IntegrationTestBase
     }
 
     [Fact]
-    public void InitSql_HasNoCreateExtension_ForAzureFlexibleServer()
+    public async Task LegacyInitSqlDatabase_IsBaselinedAt0001_AndUpgradedKeepingData()
     {
-        var sql = File.ReadAllText(PostgresFixture.InitSqlPath);
-        var statements = string.Join("\n", sql.Split('\n').Where(l => !l.TrimStart().StartsWith("--")));
-        Assert.DoesNotContain("CREATE EXTENSION", statements, StringComparison.OrdinalIgnoreCase);
+        var cs = await Fx.CreateEmptyDatabaseAsync("legacy");
+        try
+        {
+            await ExecuteAsync(cs, await File.ReadAllTextAsync(PostgresFixture.InitSqlPath)); // the old init.sql
+            await using (var connection = new NpgsqlConnection(cs))
+            {
+                await connection.OpenAsync();
+                await PsqlScriptRunner.RunAsync(connection, await File.ReadAllTextAsync(PostgresFixture.SeedSqlPath));
+            }
+            var checklists = await ScalarAsync(cs, "SELECT count(*) FROM checklists");
+            Assert.True(checklists > 0);
+
+            Assert.Equal(new[] { "0002" }, await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+
+            Assert.Equal(AllVersions, await SchemaMigrator.GetAppliedVersionsAsync(cs));
+            Assert.Equal(checklists, await ScalarAsync(cs, "SELECT count(*) FROM checklists WHERE user_id IS NULL"));
+            Assert.Equal(1, await ScalarAsync(cs, "SELECT count(*) FROM app_settings WHERE user_id IS NULL"));
+        }
+        finally
+        {
+            await Fx.DropDatabaseAsync(cs);
+        }
     }
 
     [Fact]
-    public async Task SeedSql_AppliesCleanly_AfterInitSql()
+    public async Task PartialLegacySchema_IsRefused()
+    {
+        var cs = await Fx.CreateEmptyDatabaseAsync("partial");
+        try
+        {
+            await ExecuteAsync(cs, "CREATE TABLE checklists (id uuid PRIMARY KEY)");
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+            Assert.Contains("partial", ex.Message);
+            Assert.Empty(await SchemaMigrator.GetAppliedVersionsAsync(cs));
+        }
+        finally
+        {
+            await Fx.DropDatabaseAsync(cs);
+        }
+    }
+
+    [Fact]
+    public async Task DatabaseFromANewerBuild_IsRefused()
+    {
+        var cs = await Fx.CreateEmptyDatabaseAsync("newer");
+        try
+        {
+            await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance);
+            await ExecuteAsync(cs, "INSERT INTO schema_migrations (version) VALUES ('9999')");
+            await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMigrator.MigrateAsync(cs, NullLogger.Instance));
+        }
+        finally
+        {
+            await Fx.DropDatabaseAsync(cs);
+        }
+    }
+
+    [Fact]
+    public void Migrations_HaveNoCreateExtension_ForAzureFlexibleServer()
+    {
+        foreach (var migration in SchemaMigrator.LoadEmbedded())
+        {
+            var statements = string.Join("\n", migration.Sql.Split('\n').Where(l => !l.TrimStart().StartsWith("--")));
+            Assert.DoesNotContain("CREATE EXTENSION", statements, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void Migrations_OnDisk_MatchTheEmbeddedCopies()
+    {
+        var dir = Path.Combine(PostgresFixture.RepoRoot, "db", "migrations");
+        var onDisk = Directory.GetFiles(dir, "*.sql").Select(Path.GetFileNameWithoutExtension).OrderBy(n => n).ToList();
+        Assert.Equal(SchemaMigrator.LoadEmbedded().Select(m => $"{m.Version}_{m.Name}"), onDisk);
+        Assert.False(File.Exists(Path.Combine(PostgresFixture.RepoRoot, "db", "init.sql")), "db/init.sql was replaced by db/migrations");
+    }
+
+    [Fact]
+    public async Task SeedSql_AppliesCleanly_AfterAllMigrations()
     {
         var cs = await Fx.CreateEmptyDatabaseAsync("seed");
         try
         {
-            Assert.True(await SchemaBootstrapper.EnsureSchemaAsync(cs, PostgresFixture.InitSqlPath, NullLogger.Instance));
+            await SchemaMigrator.MigrateAsync(cs, NullLogger.Instance);
 
             await using (var connection = new NpgsqlConnection(cs))
             {
@@ -197,12 +294,14 @@ public class ConstraintAndCascadeTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task AppSettings_IsASingleton()
+    public async Task AppSettings_IsOneRowPerUser()
     {
+        // The test user already has a settings row (created at registration).
         await using var db = NewDb();
-        db.AppSettings.Add(new AppSetting { Id = 2 });
+        db.AppSettings.Add(new AppSetting());
         var ex = InnerPostgres(await Assert.ThrowsAnyAsync<Exception>(() => db.SaveChangesAsync()));
-        Assert.True(ex.SqlState is PostgresErrorCodes.CheckViolation);
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, ex.SqlState);
+        Assert.Equal("ux_app_settings_user_id", ex.ConstraintName);
     }
 
     [Fact]
@@ -226,6 +325,22 @@ public class ConstraintAndCascadeTests : IntegrationTestBase
             var ex = InnerPostgres(await Assert.ThrowsAnyAsync<Exception>(() => db.SaveChangesAsync()));
             Assert.Equal(PostgresErrorCodes.UniqueViolation, ex.SqlState);
         }
+
+        // ...but the override uniqueness is per user: another user may use the same date.
+        await using (var db = NewDb())
+        {
+            db.DayOverrides.Add(new DayOverride { Date = date });
+            await db.SaveChangesAsync();
+        }
+        var (other, otherId, _) = await SignInAnotherUserAsync();
+        using (other)
+        {
+            await using var otherDb = Fx.CreateUserDbContext(otherId);
+            otherDb.DayOverrides.Add(new DayOverride { Date = date, Mode = DayOverrideMode.RestDay });
+            await otherDb.SaveChangesAsync();
+        }
+        await using (var sys = NewSystemDb())
+            Assert.Equal(2, await sys.DayOverrides.CountAsync(o => o.Date == date));
     }
 
     [Fact]
@@ -322,9 +437,10 @@ public class ConstraintAndCascadeTests : IntegrationTestBase
         {
             await connection.OpenAsync();
             await using var cmd = new NpgsqlCommand(
-                "INSERT INTO checklists (id, name) VALUES (@id, 'Raw'); INSERT INTO checklist_items (checklist_id, title, due_date) VALUES (@id, 'Raw item', @due);",
+                "INSERT INTO checklists (id, name, user_id) VALUES (@id, 'Raw', @user); INSERT INTO checklist_items (checklist_id, title, due_date, user_id) VALUES (@id, 'Raw item', @due, @user);",
                 connection);
             cmd.Parameters.AddWithValue("id", checklistId);
+            cmd.Parameters.AddWithValue("user", UserId);
             cmd.Parameters.AddWithValue("due", Today);
             await cmd.ExecuteNonQueryAsync();
         }

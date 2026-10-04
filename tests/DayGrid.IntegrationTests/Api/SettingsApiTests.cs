@@ -19,11 +19,12 @@ public class SettingsApiTests : IntegrationTestBase
     };
 
     [Fact]
-    public async Task Get_ReturnsInitSqlDefaults()
+    public async Task Get_ReturnsTheNewAccountsDefaults()
     {
         var settings = await GetOkAsync(Url);
-        Assert.Equal(1, settings.GetProperty("id").GetInt32());
-        Assert.Equal("Asia/Kolkata", Str(settings, "timeZone"));
+        Assert.Equal("Asia/Kolkata", Str(settings, "timeZone")); // App:TimeZone
+        Assert.Equal(UserEmail, Str(settings, "emailTo"));
+        Assert.False(settings.TryGetProperty("userId", out _)); // never serialized
         Assert.Equal("Monday", Str(settings, "weekStartsOn"));
         Assert.Equal("06:00:00", Str(settings, "dayStart"));
         Assert.Equal("07:00:00", Str(settings, "dailyDigestTime"));
@@ -33,20 +34,21 @@ public class SettingsApiTests : IntegrationTestBase
     [Fact]
     public async Task Put_RoundTrips_IncludingNullDigestAndMaxLengths()
     {
-        var updated = await PutOkAsync(Url, Settings(timeZone: Text.Of(60), theme: Text.Of(20), emailTo: Text.Of(200)));
+        // The time zone must be a real IANA id now (it drives the user's clock); use a long one.
+        var updated = await PutOkAsync(Url, Settings(timeZone: "America/Argentina/ComodRivadavia", theme: Text.Of(20), emailTo: Text.Of(200)));
         AssertJsonEquivalent(updated, await GetOkAsync(Url));
         Assert.Equal(JsonValueKind.Null, (await GetOkAsync(Url)).GetProperty("dailyDigestTime").ValueKind);
     }
 
     [Fact]
-    public async Task Put_RecreatesMissingRow()
+    public async Task MissingRow_IsRecreatedWithDefaults()
     {
         await using (var db = NewDb())
         {
             db.AppSettings.RemoveRange(db.AppSettings);
             await db.SaveChangesAsync();
         }
-        await AssertStatusAsync(HttpStatusCode.NotFound, await Client.GetAsync(Url));
+        Assert.Equal("Asia/Kolkata", Str(await GetOkAsync(Url), "timeZone"));
 
         var created = await PutOkAsync(Url, Settings(digest: "06:30:00"));
         AssertJsonEquivalent(created, await GetOkAsync(Url));
@@ -56,6 +58,8 @@ public class SettingsApiTests : IntegrationTestBase
     public async Task Put_Validation()
     {
         await AssertValidationErrorAsync(await Client.PutAsJsonAsync(Url, Settings(timeZone: " ")), "timeZone");
+        await AssertValidationErrorAsync(await Client.PutAsJsonAsync(Url, Settings(timeZone: "Mars/Olympus_Mons")), "timeZone");
+        await AssertValidationErrorAsync(await Client.PutAsJsonAsync(Url, Settings(timeZone: "India Standard Time")), "timeZone");
         await AssertValidationErrorAsync(await Client.PutAsJsonAsync(Url, Settings(theme: "")), "theme");
         await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.PutAsJsonAsync(Url, Settings(timeZone: Text.Of(61))));
         await AssertStatusAsync(HttpStatusCode.BadRequest, await Client.PutAsJsonAsync(Url, Settings(theme: Text.Of(21))));

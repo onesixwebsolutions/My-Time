@@ -8,11 +8,10 @@ public class AppSettingConfiguration : IEntityTypeConfiguration<AppSetting>
 {
     public void Configure(EntityTypeBuilder<AppSetting> builder)
     {
-        builder.ToTable("app_settings", t =>
-            t.HasCheckConstraint("ck_app_settings_singleton", "id = 1"));
+        builder.ToTable("app_settings");
 
         builder.HasKey(x => x.Id);
-        builder.Property(x => x.Id).HasColumnName("id").ValueGeneratedNever();
+        builder.Property(x => x.Id).HasColumnName("id").UseIdentityByDefaultColumn();
 
         builder.Property(x => x.TimeZone).HasColumnName("time_zone").HasMaxLength(60).IsRequired();
         builder.Property(x => x.WeekStartsOn).HasColumnName("week_starts_on").HasConversion<short>();
@@ -24,20 +23,8 @@ public class AppSettingConfiguration : IEntityTypeConfiguration<AppSetting>
         builder.Property(x => x.DailyDigestTime).HasColumnName("daily_digest_time");
         builder.Property(x => x.Theme).HasColumnName("theme").HasMaxLength(20);
 
-        // Seed the single settings row so the app has sane defaults from a fresh migration,
-        // matching plan section 4.2.
-        builder.HasData(new AppSetting
-        {
-            Id = 1,
-            TimeZone = "Asia/Kolkata",
-            WeekStartsOn = DayOfWeek.Monday,
-            DayStart = new TimeOnly(6, 0),
-            DayEnd = new TimeOnly(23, 0),
-            DefaultSlotMinutes = 30,
-            EmailEnabled = true,
-            EmailTo = "onesixwebsolutions@gmail.com",
-            DailyDigestTime = new TimeOnly(7, 0),
-            Theme = "system"
-        });
+        // One settings row per user (migration 0002). Rows are created at registration
+        // (AccountService) — there is no global seed row any more.
+        builder.HasIndex(x => x.UserId).IsUnique().HasDatabaseName("ux_app_settings_user_id");
     }
 }

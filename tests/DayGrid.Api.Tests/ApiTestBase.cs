@@ -2,17 +2,39 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using DayGrid.TestSupport;
 using Xunit;
 
 namespace DayGrid.Api.Tests;
 
-public abstract class ApiTestBase : IClassFixture<DayGridApiFactory>
+/// <summary>
+/// Each test runs as a brand-new, signed-in, email-confirmed user (real cookie + antiforgery
+/// pipeline), so tests in one class never see each other's data.
+/// </summary>
+public abstract class ApiTestBase : IClassFixture<DayGridApiFactory>, IAsyncLifetime
 {
-    protected readonly HttpClient Client;
+    protected readonly DayGridApiFactory Factory;
+    private TestSession? _session;
 
     protected ApiTestBase(DayGridApiFactory factory)
     {
-        Client = factory.CreateClient();
+        Factory = factory;
+    }
+
+    protected TestSession Session => _session ?? throw new InvalidOperationException("Not initialized.");
+    protected HttpClient Client => Session.Client;
+    protected Guid UserId { get; private set; }
+    protected string UserEmail { get; private set; } = string.Empty;
+
+    public virtual async Task InitializeAsync()
+    {
+        (_session, UserId, UserEmail) = await TestAccounts.SignedInAsync(Factory);
+    }
+
+    public virtual Task DisposeAsync()
+    {
+        _session?.Dispose();
+        return Task.CompletedTask;
     }
 
     protected static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response)

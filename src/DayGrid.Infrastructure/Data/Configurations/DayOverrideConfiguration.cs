@@ -18,7 +18,8 @@ public class DayOverrideConfiguration : IEntityTypeConfiguration<DayOverride>
         builder.Property(x => x.TemplateId).HasColumnName("template_id");
         builder.Property(x => x.Note).HasColumnName("note").HasMaxLength(200);
 
-        builder.HasIndex(x => x.Date).IsUnique();
+        // One override per user per date.
+        builder.HasIndex(x => new { x.UserId, x.Date }).IsUnique().HasDatabaseName("ux_day_overrides_user_date");
 
         builder.HasOne<TimetableTemplate>()
             .WithMany()

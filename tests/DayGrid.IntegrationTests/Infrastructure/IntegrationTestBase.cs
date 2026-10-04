@@ -3,38 +3,60 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using DayGrid.Infrastructure.Data;
+using DayGrid.TestSupport;
 using Xunit;
 
 namespace DayGrid.IntegrationTests.Infrastructure;
 
-/// <summary>Every test starts from an empty schema (plus the init.sql settings row).</summary>
+/// <summary>
+/// Every test starts from an empty schema with one freshly registered, email-confirmed account
+/// (the first account, so also Admin) whose signed-in session is <see cref="Client"/> — real
+/// cookie auth and antiforgery. <see cref="NewDb"/> acts as that same user.
+/// </summary>
 [Collection(PostgresCollection.Name)]
 public abstract class IntegrationTestBase : IAsyncLifetime
 {
     protected readonly PostgresFixture Fx;
-    protected readonly HttpClient Client;
+    private TestSession? _session;
 
     protected IntegrationTestBase(PostgresFixture fixture)
     {
         Fx = fixture;
-        Client = fixture.Factory.CreateClient();
     }
+
+    protected TestSession Session => _session ?? throw new InvalidOperationException("Not initialized.");
+    protected HttpClient Client => Session.Client;
+    protected Guid UserId { get; private set; }
+    protected string UserEmail { get; private set; } = string.Empty;
+
+    /// <summary>False for tests that need a database without any account (first-user rules).</summary>
+    protected virtual bool SignInDefaultUser => true;
 
     public virtual async Task InitializeAsync()
     {
         await Fx.ResetAsync();
         Fx.Factory.Email.Reset();
+        if (SignInDefaultUser)
+            (_session, UserId, UserEmail) = await TestAccounts.SignedInAsync(Fx.Factory);
     }
 
     public virtual Task DisposeAsync()
     {
-        Client.Dispose();
+        _session?.Dispose();
         return Task.CompletedTask;
     }
 
+    /// <summary>Signs in another, brand-new account (for cross-user tests).</summary>
+    protected Task<(TestSession Session, Guid UserId, string Email)> SignInAnotherUserAsync(string prefix = "other") =>
+        TestAccounts.SignedInAsync(Fx.Factory, prefix);
+
     protected static DateOnly Today => DateOnly.FromDateTime(IntegrationApiFactory.FrozenNow.DateTime);
 
-    protected AppDbContext NewDb() => Fx.CreateDbContext();
+    /// <summary>A context acting as the test user (tenant-filtered, stamps inserts).</summary>
+    protected AppDbContext NewDb() => Fx.CreateUserDbContext(UserId);
+
+    /// <summary>An unfiltered system context (sees every user's rows).</summary>
+    protected AppDbContext NewSystemDb() => Fx.CreateDbContext();
 
     protected static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response)
     {

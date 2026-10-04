@@ -1,18 +1,25 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DayGrid.Api;
+using DayGrid.Api.Auth;
 using DayGrid.Api.Endpoints;
 using DayGrid.Api.Hubs;
+using DayGrid.Api.Security;
 using DayGrid.Application.Scheduling;
+using DayGrid.Application.Security;
 using DayGrid.Application.Time;
 using DayGrid.Infrastructure.BackgroundServices;
 using DayGrid.Infrastructure.Data;
 using DayGrid.Infrastructure.Email;
+using DayGrid.Infrastructure.Notifications;
 using DayGrid.Infrastructure.Scheduling;
+using DayGrid.Infrastructure.Security;
 using DayGrid.Infrastructure.Time;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.OpenApi.Models;
 using MysticMind.PostgresEmbed;
 using Serilog;
 
@@ -72,9 +79,7 @@ if (string.Equals(databaseMode, "Embedded", StringComparison.OrdinalIgnoreCase))
     var dataDir = builder.Configuration["Database:EmbeddedDataDir"] is { Length: > 0 } configuredDir
         ? configuredDir
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DayGrid", "pgdata");
-    var schemaSqlPath = Path.Combine(AppContext.BaseDirectory, "db", "init.sql");
-
-    (embeddedPg, connectionString) = await EmbeddedDatabase.StartAsync(dataDir, schemaSqlPath);
+    (embeddedPg, connectionString) = await EmbeddedDatabase.StartAsync(dataDir);
 }
 else
 {
@@ -83,6 +88,11 @@ else
         ?? "Host=localhost;Database=daygrid;Username=daygrid;Password=dev";
 }
 
+// The context is tenant-scoped: ICurrentUser (the signed-in user, or the user a background job
+// acts for) drives its global query filters and insert stamping — see AppDbContext.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<CurrentUserContext>();
+builder.Services.AddScoped<ICurrentUser>(sp => sp.GetRequiredService<CurrentUserContext>());
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
 
 // Readiness probe (/health/ready) — verifies the database is reachable. /health stays a pure
@@ -114,9 +124,18 @@ builder.Services.AddCors(options => options.AddPolicy(AngularDevCorsPolicy, poli
     .AllowCredentials()));
 
 // ---------------------------------------------------------------------
-// SignalR
+// Authentication & authorization — ASP.NET Core Identity with the daygrid.auth cookie,
+// antiforgery (XSRF-TOKEN cookie / X-XSRF-TOKEN header), a fallback policy requiring an
+// authenticated, email-confirmed user on every endpoint, the Admin policy, the auth rate limiter
+// and Data Protection keys in the database. See Auth/AuthSetup.cs and the auth contract.
+// ---------------------------------------------------------------------
+builder.Services.AddDayGridAuth();
+
+// ---------------------------------------------------------------------
+// SignalR — [Authorize] hub; events go to Clients.User(userId) only.
 // ---------------------------------------------------------------------
 builder.Services.AddSignalR();
+builder.Services.AddSingleton<IUserNotifier, SignalRUserNotifier>();
 
 // ---------------------------------------------------------------------
 // JSON — camelCase is System.Text.Json's default policy for minimal APIs, but we set it
@@ -140,27 +159,49 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    options.SwaggerDoc("v1", new OpenApiInfo
     {
         Title = "DayGrid API",
         Version = "v1",
-        Description = "Personal daily checklist & timetable API."
+        Description = "Personal daily checklist & timetable API. Cookie auth: call GET /api/v1/auth/me, " +
+                      "then POST /api/v1/auth/login; unsafe requests need the X-XSRF-TOKEN header (value of the XSRF-TOKEN cookie)."
     });
+    // Swagger UI runs on the same origin, so the browser sends the daygrid.auth cookie itself;
+    // the antiforgery header has to be supplied by hand (Authorize button).
+    var xsrf = new OpenApiSecurityScheme
+    {
+        Name = AuthSupport.XsrfHeaderName,
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Description = "Copy the value of the XSRF-TOKEN cookie (issued by GET /api/v1/auth/me) here.",
+        Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "xsrf" }
+    };
+    options.AddSecurityDefinition("xsrf", xsrf);
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement { [xsrf] = Array.Empty<string>() });
 });
 
 // ---------------------------------------------------------------------
 // Email
 // ---------------------------------------------------------------------
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
-builder.Services.AddScoped<IEmailSender, MailKitEmailSender>();
+builder.Services.AddScoped<MailKitEmailSender>();
+builder.Services.AddScoped<PickupDirectoryEmailSender>();
+// Email:Mode = Smtp (default) | Pickup (.eml files in Email:PickupDirectory — dev and e2e tests).
+builder.Services.AddScoped<IEmailSender>(sp =>
+    sp.GetRequiredService<IOptions<EmailSettings>>().Value.Mode == EmailDeliveryMode.Pickup
+        ? sp.GetRequiredService<PickupDirectoryEmailSender>()
+        : sp.GetRequiredService<MailKitEmailSender>());
 
 // ---------------------------------------------------------------------
 // Application services
 // ---------------------------------------------------------------------
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<IAppClock>(sp => new AppClock(
+// Time zones are per user: IAppClock in a request is the signed-in user's clock (their
+// app_settings.time_zone, falling back to App:TimeZone). Background jobs use the factory.
+builder.Services.AddSingleton<IAppClockFactory>(sp => new AppClockFactory(
     sp.GetRequiredService<TimeProvider>(),
-    builder.Configuration["App:TimeZone"] ?? AppClock.DefaultTimeZoneId));
+    sp.GetRequiredService<IConfiguration>()["App:TimeZone"] ?? AppClock.DefaultTimeZoneId));
+builder.Services.AddScoped<IAppClock, UserAppClock>();
 builder.Services.AddScoped<IDayPlanBuilder, DayPlanBuilder>();
 
 // ---------------------------------------------------------------------
@@ -171,40 +212,59 @@ builder.Services.AddHostedService<DailyDigestService>();
 
 var app = builder.Build();
 
-// Resolve the clock eagerly so a bad App:TimeZone fails at startup, not on the first request.
-var appClock = app.Services.GetRequiredService<IAppClock>();
-app.Logger.LogInformation("User time zone: {TimeZone}; local time now {Now:yyyy-MM-dd HH:mm zzz}", appClock.TimeZone.Id, appClock.Now);
+// Resolve the clock factory eagerly so a bad App:TimeZone fails at startup, not on the first request.
+var defaultClock = app.Services.GetRequiredService<IAppClockFactory>().ForTimeZone(null);
+app.Logger.LogInformation("Default time zone: {TimeZone}; local time now {Now:yyyy-MM-dd HH:mm zzz}", defaultClock.TimeZone.Id, defaultClock.Now);
+
+// Email links (confirmation, password reset) must point at the public site. Fail fast in
+// Production rather than mailing localhost links. The desktop exe (Embedded mode) runs on
+// localhost by design and falls back to the request origin.
+if (app.Environment.IsProduction()
+    && embeddedPg is null
+    && !Uri.TryCreate(app.Configuration["App:PublicBaseUrl"], UriKind.Absolute, out _))
+{
+    throw new InvalidOperationException(
+        "App:PublicBaseUrl must be set to the site's absolute public URL in Production (e.g. App__PublicBaseUrl=https://daygrid.example.com).");
+}
 
 // ---------------------------------------------------------------------
-// Schema bootstrap for External mode (e.g. a fresh Azure Database for PostgreSQL). There are no
-// EF migrations; db/init.sql is the schema. Opt-in via Database:InitializeSchema=true — guarded
-// by an existence check, so it only ever runs against an empty database. Never seeds data.
+// Schema migrations (db/migrations/NNNN_*.sql, embedded in DayGrid.Infrastructure). External
+// mode: opt-in via Database:InitializeSchema=true (Azure, docker-compose, local dev). Embedded
+// mode already migrated in EmbeddedDatabase.StartAsync. A database created from the old
+// db/init.sql is baselined at 0001 and upgraded. Never seeds data.
 // ---------------------------------------------------------------------
 if (embeddedPg is null && app.Configuration.GetValue<bool>("Database:InitializeSchema"))
 {
-    var schemaSqlPath = Path.Combine(AppContext.BaseDirectory, "db", "init.sql");
     const int maxAttempts = 5;
     for (var attempt = 1; attempt <= maxAttempts; attempt++)
     {
         try
         {
-            await SchemaBootstrapper.EnsureSchemaAsync(connectionString, schemaSqlPath, app.Logger);
+            await SchemaMigrator.MigrateAsync(connectionString, app.Logger);
             break;
         }
         catch (Exception ex) when (attempt < maxAttempts)
         {
-            app.Logger.LogWarning(ex, "Schema bootstrap attempt {Attempt}/{MaxAttempts} failed — retrying", attempt, maxAttempts);
+            app.Logger.LogWarning(ex, "Schema migration attempt {Attempt}/{MaxAttempts} failed — retrying", attempt, maxAttempts);
             await Task.Delay(TimeSpan.FromSeconds(5 * attempt));
         }
         catch (Exception ex)
         {
             // Keep the host up so /health and logs stay reachable; /health/ready reports the DB state.
-            app.Logger.LogError(ex, "Schema bootstrap failed after {MaxAttempts} attempts — database may be missing its schema", maxAttempts);
+            app.Logger.LogError(ex, "Schema migration failed after {MaxAttempts} attempts — database may be missing its schema", maxAttempts);
         }
     }
 }
 
 app.UseForwardedHeaders();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+app.UseMiddleware<SecurityHeadersMiddleware>();
 
 app.UseSerilogRequestLogging();
 
@@ -220,7 +280,11 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     // Values the database rejects (too long for a varchar, out of numeric(12,2) range, a NUL
     // character, a dangling foreign key, a violated CHECK/unique constraint) are client errors too.
     var dbStatus = DatabaseErrors.ToStatusCode(error);
-    var status = badRequest?.StatusCode ?? dbStatus ?? StatusCodes.Status500InternalServerError;
+    // A write referencing another user's row is reported exactly like a dangling reference.
+    var tenantViolation = error as TenantViolationException;
+    var tenantStatus = tenantViolation is null ? (int?)null
+        : tenantViolation.IsReference ? StatusCodes.Status400BadRequest : StatusCodes.Status404NotFound;
+    var status = badRequest?.StatusCode ?? dbStatus ?? tenantStatus ?? StatusCodes.Status500InternalServerError;
     var isClientError = status < 500;
     context.Response.StatusCode = status;
     context.Response.ContentType = "application/problem+json";
@@ -228,16 +292,17 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
     {
         type = !isClientError ? "https://tools.ietf.org/html/rfc7231#section-6.6.1"
             : status == StatusCodes.Status409Conflict ? "https://tools.ietf.org/html/rfc7231#section-6.5.8"
+            : status == StatusCodes.Status404NotFound ? "https://tools.ietf.org/html/rfc7231#section-6.5.4"
             : "https://tools.ietf.org/html/rfc7231#section-6.5.1",
         title = !isClientError ? "An unexpected error occurred."
             : dbStatus is not null ? DatabaseErrors.Describe(error!)
+            : tenantViolation is { IsReference: true } ? "The request references a record that does not exist."
+            : tenantViolation is not null ? "Not found."
             : "The request was invalid.",
         status
     };
     await context.Response.WriteAsync(JsonSerializer.Serialize(problem));
 }));
-
-app.UseCors(AngularDevCorsPolicy);
 
 if (app.Environment.IsDevelopment())
 {
@@ -245,23 +310,37 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "DayGrid API v1"));
 
     using var scope = app.Services.CreateScope();
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     try
     {
-        db.Database.Migrate();
-        SeedData.Seed(db); // no-op if the DB already has data — see SeedData.Seed's guard clause
+        // A system (unfiltered) context: sample rows are inserted unowned, so the first account
+        // to register claims them. No-op once data or any account exists.
+        await using var systemDb = new AppDbContext(scope.ServiceProvider.GetRequiredService<DbContextOptions<AppDbContext>>());
+        SeedData.Seed(systemDb);
     }
     catch (Exception ex)
     {
-        // Don't crash local dev if Postgres isn't up yet / migrations aren't generated yet —
-        // log and let the developer retry once the DB is ready.
-        Log.Warning(ex, "Skipping auto-migrate/seed — database not ready");
+        // Don't crash local dev if Postgres isn't up yet — log and let the developer retry.
+        Log.Warning(ex, "Skipping sample-data seed — database not ready");
     }
 }
 
+// Static SPA assets are public and served before authentication/authorization run.
+app.UseStaticFiles();
+
+app.UseRouting();
+app.UseCors(AngularDevCorsPolicy);
+app.UseAuthentication();
+app.UseRateLimiter();
+app.UseAuthorization();
+app.UseMiddleware<AntiforgeryValidationMiddleware>();
+
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", utc = DateTimeOffset.UtcNow }))
-    .WithTags("Health");
-app.MapHealthChecks("/health/ready");
+    .WithTags("Health")
+    .AllowAnonymous();
+app.MapHealthChecks("/health/ready").AllowAnonymous();
+
+app.MapAuthEndpoints();
+app.MapAdminEndpoints();
 
 app.MapTodayEndpoints();
 app.MapTasksEndpoints();
@@ -279,12 +358,13 @@ app.MapHub<ScheduleHub>("/hubs/schedule");
 // MapFallbackToFile lets Angular's client-side router handle deep links like /checklists/{id}
 // by always falling back to index.html for any GET that isn't a real file or a mapped API/hub
 // route above. Harmless no-op in local dev, where the SPA is served separately by `ng serve`.
-app.UseStaticFiles();
+// (UseStaticFiles itself runs earlier in the pipeline, before authentication.)
 // Unknown /api/* URLs are API misses, not client-side routes: answer 404 instead of letting
 // the SPA fallback below return index.html with a 200 (which the Angular HttpClient would
 // then fail to parse as JSON).
+// (Still behind the fallback policy: anonymous callers get 401 like every other /api URL.)
 app.MapFallback("/api/{**path}", () => Results.NotFound());
-app.MapFallbackToFile("index.html");
+app.MapFallbackToFile("index.html").AllowAnonymous();
 
 if (embeddedPg is not null)
 {

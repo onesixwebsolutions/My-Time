@@ -1,4 +1,5 @@
 using DayGrid.Api;
+using DayGrid.Infrastructure.Data;
 using DayGrid.IntegrationTests.Infrastructure;
 using Npgsql;
 using Xunit;
@@ -27,12 +28,11 @@ public class EmbeddedDatabaseTests : IDisposable
     [Fact]
     public async Task FirstRun_CreatesSchemaOnFreePort_SurvivesLogFlood_AndRestartKeepsData()
     {
-        var schema = PostgresFixture.InitSqlPath;
-
-        var (server, cs) = await EmbeddedDatabase.StartAsync(_dataDir, schema);
+        var (server, cs) = await EmbeddedDatabase.StartAsync(_dataDir);
         try
         {
             Assert.NotEqual(5432, server.PgPort);
+            Assert.Equal(SchemaMigrator.LoadEmbedded().Select(m => m.Version), await SchemaMigrator.GetAppliedVersionsAsync(cs));
             await using (var connection = new NpgsqlConnection(cs))
             {
                 await connection.OpenAsync();
@@ -57,7 +57,7 @@ public class EmbeddedDatabaseTests : IDisposable
             server.Dispose();
         }
 
-        var (restarted, cs2) = await EmbeddedDatabase.StartAsync(_dataDir, schema);
+        var (restarted, cs2) = await EmbeddedDatabase.StartAsync(_dataDir); // re-runs the (no-op) migrator
         try
         {
             await using var connection = new NpgsqlConnection(cs2);

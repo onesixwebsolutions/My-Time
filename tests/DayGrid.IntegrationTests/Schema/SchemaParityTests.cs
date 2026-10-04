@@ -5,6 +5,9 @@ using DayGrid.Domain.Entities;
 using DayGrid.Domain.Enums;
 using DayGrid.Domain.ValueObjects;
 using DayGrid.Infrastructure.Data;
+using DayGrid.Infrastructure.Identity;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
 using DayGrid.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -15,8 +18,8 @@ using Xunit;
 namespace DayGrid.IntegrationTests.Schema;
 
 /// <summary>
-/// The schema is hand-written (db/init.sql), not generated from the EF model, so nothing but
-/// these tests keeps the two in step.
+/// The schema is hand-written (db/migrations/*.sql), not generated from the EF model, so nothing
+/// but these tests keeps the two in step. The fixture database has every migration applied.
 /// </summary>
 public class SchemaParityTests : IntegrationTestBase
 {
@@ -36,7 +39,7 @@ public class SchemaParityTests : IntegrationTestBase
                 SELECT table_name, column_name, data_type, is_nullable = 'YES',
                        character_maximum_length, numeric_precision, numeric_scale
                 FROM information_schema.columns
-                WHERE table_schema = 'public'
+                WHERE table_schema = 'public' AND table_name <> 'schema_migrations'
                 """, connection);
             await using var reader = await cmd.ExecuteReaderAsync();
             while (await reader.ReadAsync())
@@ -59,7 +62,7 @@ public class SchemaParityTests : IntegrationTestBase
             var table = entityType.GetTableName()!;
             if (!dbTables.Contains(table))
             {
-                diffs.Add($"{entityType.ClrType.Name}: table '{table}' does not exist in init.sql");
+                diffs.Add($"{entityType.ClrType.Name}: table '{table}' does not exist in the migrated database");
                 continue;
             }
             var store = StoreObjectIdentifier.Table(table, entityType.GetSchema());
@@ -101,7 +104,7 @@ public class SchemaParityTests : IntegrationTestBase
         foreach (var key in dbColumns.Keys.Where(k => !mapped.Contains(k)))
             diffs.Add($"{key.Item1}.{key.Item2}: column exists in database but is not mapped by EF");
 
-        Assert.True(diffs.Count == 0, "EF model vs init.sql differences:\n" + string.Join("\n", diffs.OrderBy(d => d)));
+        Assert.True(diffs.Count == 0, "EF model vs migrated schema differences:\n" + string.Join("\n", diffs.OrderBy(d => d)));
     }
 
     [Fact]
@@ -203,7 +206,7 @@ public class SchemaParityTests : IntegrationTestBase
         // back into the instances, which would hide a value the database silently replaced.
         var written = new Dictionary<object, Dictionary<string, object?>>(ReferenceEqualityComparer.Instance);
 
-        await using (var db = NewDb())
+        await using (var db = NewSystemDb())
         {
             var modelTypes = db.Model.GetEntityTypes().Select(t => t.ClrType).ToHashSet();
             var covered = rows.Select(r => r.GetType()).ToHashSet();
@@ -215,20 +218,18 @@ public class SchemaParityTests : IntegrationTestBase
                     .Where(p => p.PropertyInfo is not null)
                     .ToDictionary(p => p.Name, p => p.PropertyInfo!.GetValue(row));
 
-            // The settings singleton (id = 1) is seeded by init.sql — replace it.
-            await db.AppSettings.Where(s => s.Id == 1).ExecuteDeleteAsync();
             foreach (var row in rows)
                 db.Add(row);
             await db.SaveChangesAsync();
         }
 
         var diffs = new List<string>();
-        await using (var db = NewDb())
+        await using (var db = NewSystemDb())
         {
             foreach (var expected in rows)
             {
                 var entityType = db.Model.FindEntityType(expected.GetType())!;
-                var key = entityType.FindPrimaryKey()!.Properties.Single().PropertyInfo!.GetValue(expected)!;
+                var key = entityType.FindPrimaryKey()!.Properties.Select(p => p.PropertyInfo!.GetValue(expected)!).ToArray();
                 var actual = await db.FindAsync(expected.GetType(), key);
                 if (actual is null)
                 {
@@ -255,6 +256,22 @@ public class SchemaParityTests : IntegrationTestBase
             string.Concat(Enumerable.Repeat(seed, length / seed.Length + 1))[..length];
 
         var t0 = new DateTimeOffset(2026, 3, 4, 5, 6, 7, TimeSpan.Zero).AddTicks(1230); // 123 µs
+
+        var user = new AppUser
+        {
+            Id = Guid.NewGuid(), UserName = Max(256), NormalizedUserName = Max(256).ToUpperInvariant(), Email = Max(256),
+            NormalizedEmail = Max(256, "ÉMAIL ✓ ").ToUpperInvariant(), EmailConfirmed = true, PasswordHash = Max(400), SecurityStamp = Max(64),
+            ConcurrencyStamp = Max(64), PhoneNumber = Max(40), PhoneNumberConfirmed = true, TwoFactorEnabled = true,
+            LockoutEnd = t0.AddDays(2), LockoutEnabled = false, AccessFailedCount = 4, DisplayName = Max(100),
+            CreatedAt = t0, LastLoginAt = t0.AddHours(1)
+        };
+        var role = new IdentityRole<Guid> { Id = Guid.NewGuid(), Name = Max(256), NormalizedName = Max(256, "RÔLE ").ToUpperInvariant(), ConcurrencyStamp = Max(40) };
+        var userRole = new IdentityUserRole<Guid> { UserId = user.Id, RoleId = role.Id };
+        var userClaim = new IdentityUserClaim<Guid> { Id = 1001, UserId = user.Id, ClaimType = Max(300), ClaimValue = Max(300) };
+        var userLogin = new IdentityUserLogin<Guid> { LoginProvider = Max(128), ProviderKey = Max(128), ProviderDisplayName = Max(200), UserId = user.Id };
+        var userToken = new IdentityUserToken<Guid> { UserId = user.Id, LoginProvider = Max(128), Name = Max(128), Value = Max(500) };
+        var roleClaim = new IdentityRoleClaim<Guid> { Id = 1002, RoleId = role.Id, ClaimType = Max(300), ClaimValue = Max(300) };
+        var dataProtectionKey = new DataProtectionKey { Id = 1003, FriendlyName = Max(100), Xml = Max(3000) };
 
         var checklist = new Checklist
         {
@@ -327,7 +344,7 @@ public class SchemaParityTests : IntegrationTestBase
         };
         var settings = new AppSetting
         {
-            Id = 1, TimeZone = Max(60), WeekStartsOn = DayOfWeek.Sunday, DayStart = new TimeOnly(0, 0),
+            Id = 77, TimeZone = Max(60), WeekStartsOn = DayOfWeek.Sunday, DayStart = new TimeOnly(0, 0),
             DayEnd = new TimeOnly(0, 30), DefaultSlotMinutes = 60, EmailEnabled = false, EmailTo = Max(200),
             DailyDigestTime = null, Theme = Max(20)
         };
@@ -352,11 +369,17 @@ public class SchemaParityTests : IntegrationTestBase
             CreatedAt = t0, UpdatedAt = t0
         };
 
-        return new List<object>
+        var owned = new List<IUserOwned>
         {
             checklist, template, block, item, completion, assignment, dayOverride, futureTask, reminder,
             itemReminder, notification, settings, simpleTask, constant, varying, spend
         };
+        foreach (var row in owned)
+            row.UserId = user.Id;
+
+        return new List<object> { user, role, userRole, userClaim, userLogin, userToken, roleClaim, dataProtectionKey }
+            .Concat(owned)
+            .ToList();
     }
 
     private static bool ValuesEqual(object? e, object? a) => (e, a) switch

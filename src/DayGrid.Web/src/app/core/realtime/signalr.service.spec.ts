@@ -1,6 +1,7 @@
 import { TestBed, fakeAsync, flushMicrotasks, tick } from '@angular/core/testing';
 import * as signalR from '@microsoft/signalr';
 
+import { FakeAuthService, fakeAuthService, provideFakeAuth } from '../../testing/auth-testing';
 import { ReminderFiredPayload, SignalrService, retryDelayMs } from './signalr.service';
 
 type Handler = (...args: unknown[]) => void;
@@ -27,6 +28,7 @@ describe('SignalrService', () => {
   let withUrlSpy: jasmine.Spy;
   let reconnectSpy: jasmine.Spy;
   let buildSpy: jasmine.Spy;
+  let auth: FakeAuthService;
 
   beforeEach(() => {
     fake = new FakeHubConnection();
@@ -36,7 +38,23 @@ describe('SignalrService', () => {
     buildSpy = spyOn(proto, 'build').and.returnValue(fake as unknown as signalR.HubConnection);
     spyOn(console, 'error');
 
+    auth = fakeAuthService();
+    TestBed.configureTestingModule({ providers: [provideFakeAuth(auth)] });
     service = TestBed.inject(SignalrService);
+  });
+
+  it('does not connect while signed out', () => {
+    auth.setUser(null);
+    service.connect();
+    expect(buildSpy).not.toHaveBeenCalled();
+  });
+
+  it('stops the connection when the session ends (logout / 401)', () => {
+    service.connect();
+    auth.endSession();
+    expect(fake.stop).toHaveBeenCalled();
+    service.connect();
+    expect(buildSpy).toHaveBeenCalledTimes(2);
   });
 
   it('retryDelayMs() backs off exponentially and caps at 30s', () => {

@@ -20,9 +20,18 @@ export const INTEGRATION_BINARIES = path.join(os.tmpdir(), 'daygrid-integration-
 /** globalSetup -> globalTeardown hand-off (pid, temp dir). */
 export const STATE_FILE = path.join(os.tmpdir(), 'daygrid-e2e-state.json');
 
+/** Signed-in browser state of the first registered account (Admin), written by globalSetup. */
+export const STORAGE_STATE = path.join(os.tmpdir(), 'daygrid-e2e-admin-state.json');
+
 export interface E2eState {
   pid: number;
   dataDir: string;
   logFile: string;
   baseURL: string;
+  /** Email:PickupDirectory — every email the API sends lands here as an .eml file. */
+  pickupDir: string;
+  admin?: { email: string; password: string; displayName: string };
 }
+
+/** The password every e2e account starts with (>= 10 chars, the API's minimum). */
+export const E2E_PASSWORD = 'e2e correct horse battery';

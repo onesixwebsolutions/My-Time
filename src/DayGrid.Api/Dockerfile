@@ -17,7 +17,9 @@ COPY tests/DayGrid.UnitTests/DayGrid.UnitTests.csproj tests/DayGrid.UnitTests/
 
 RUN dotnet restore src/DayGrid.Api/DayGrid.Api.csproj
 
-# Now copy the rest of the source and publish.
+# Now copy the rest of the source and publish. The schema migrations are embedded into
+# DayGrid.Infrastructure at build time, so they must be in the build context too.
+COPY db/migrations/ db/migrations/
 COPY src/ src/
 RUN dotnet publish src/DayGrid.Api/DayGrid.Api.csproj -c Release -o /app/publish --no-restore
 

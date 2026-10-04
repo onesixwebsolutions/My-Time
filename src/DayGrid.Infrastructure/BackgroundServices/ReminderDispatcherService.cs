@@ -2,6 +2,8 @@ using DayGrid.Domain.Entities;
 using DayGrid.Domain.Enums;
 using DayGrid.Infrastructure.Data;
 using DayGrid.Infrastructure.Email;
+using DayGrid.Infrastructure.Notifications;
+using DayGrid.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,14 +14,17 @@ namespace DayGrid.Infrastructure.BackgroundServices;
 /// <summary>
 /// 60-second tick: finds due reminders and fans them out to their enabled channels.
 ///
+/// There is no HttpContext here, so the tick works per user explicitly: it lists the users that
+/// have due reminders, then processes each one in its own DI scope that acts as that user
+/// (<see cref="CurrentUserContext.ActAs"/>), so tenant filters and stamping apply exactly as in a
+/// request. Email goes to that user's confirmed account address (never anybody else's), and only
+/// when the user's settings have email enabled. In-app notifications are pushed to that user's
+/// SignalR connections only.
+///
 /// Production note: plan section 5.8 specifies `SELECT ... FOR UPDATE SKIP LOCKED` so a second
-/// API instance can never double-send a reminder. EF Core's LINQ layer has no way to express
-/// row-level locking hints — that would require a raw SQL query via `FromSqlRaw` (or
-/// `FromSqlInterpolated`) against a query that also updates status inside the same statement/
-/// transaction. This scaffold does the simpler, single-instance-safe thing instead: read the
-/// batch, immediately flip each row to a transitional "claimed" state inside one SaveChanges
-/// call, then process. That is a reasonable best-effort for one API instance; if/when this ever
-/// runs with more than one replica, swap the query below for a `FromSqlRaw` with
+/// API instance can never double-send a reminder. This does the simpler, single-instance-safe
+/// thing: read a batch and flip each row's status in one SaveChanges call. If this ever runs with
+/// more than one replica, swap the due-reminder query for a `FromSqlRaw` with
 /// `FOR UPDATE SKIP LOCKED` before anything else changes.
 /// </summary>
 public class ReminderDispatcherService : BackgroundService
@@ -55,30 +60,65 @@ public class ReminderDispatcherService : BackgroundService
 
     private async Task ProcessDueRemindersAsync(CancellationToken ct)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
-
         var nowUtc = DateTimeOffset.UtcNow;
 
+        List<Guid> userIds;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // Legacy rows (user_id NULL) wait until the first account claims them.
+            userIds = await db.Reminders.IgnoreQueryFilters().AsNoTracking()
+                .Where(r => r.UserId != null && r.Status == ReminderStatus.Scheduled && r.FireAtUtc <= nowUtc)
+                .Select(r => r.UserId!.Value)
+                .Distinct()
+                .ToListAsync(ct);
+        }
+
+        foreach (var userId in userIds)
+        {
+            try
+            {
+                await ProcessUserAsync(userId, nowUtc, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                // One user's failure must not starve everybody else's reminders.
+                _logger.LogError(ex, "Reminder dispatch failed for user {UserId}", userId);
+            }
+        }
+    }
+
+    private async Task ProcessUserAsync(Guid userId, DateTimeOffset nowUtc, CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        scope.ServiceProvider.GetService<CurrentUserContext>()?.ActAs(userId);
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var emailSender = scope.ServiceProvider.GetRequiredService<IEmailSender>();
+        var notifier = scope.ServiceProvider.GetService<IUserNotifier>();
+
+        // The explicit UserId predicates keep this correct even in a system (unfiltered) context.
         var due = await db.Reminders
-            .Where(r => r.Status == ReminderStatus.Scheduled && r.FireAtUtc <= nowUtc)
+            .Where(r => r.UserId == userId && r.Status == ReminderStatus.Scheduled && r.FireAtUtc <= nowUtc)
             .OrderBy(r => r.FireAtUtc)
             .Take(100)
             .ToListAsync(ct);
-
         if (due.Count == 0)
             return;
 
-        var appSettings = await db.AppSettings.AsNoTracking().FirstOrDefaultAsync(ct);
-        var emailTo = appSettings?.EmailTo;
-        var emailEnabled = appSettings?.EmailEnabled ?? false;
+        var settings = await db.AppSettings.AsNoTracking().FirstOrDefaultAsync(s => s.UserId == userId, ct);
+        var account = await db.Users.AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new { u.Email, u.EmailConfirmed })
+            .FirstOrDefaultAsync(ct);
+        var emailTo = account is { EmailConfirmed: true } ? account.Email : null;
+        var emailEnabled = settings?.EmailEnabled ?? false;
 
+        var inApp = new List<NotificationLog>();
         foreach (var reminder in due)
         {
             try
             {
-                await DispatchAsync(db, emailSender, reminder, emailEnabled, emailTo, nowUtc, ct);
+                await DispatchAsync(db, emailSender, reminder, emailEnabled, emailTo, nowUtc, inApp, ct);
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -91,28 +131,42 @@ public class ReminderDispatcherService : BackgroundService
         }
 
         await db.SaveChangesAsync(ct);
+
+        if (notifier is null)
+            return;
+        foreach (var log in inApp)
+        {
+            try
+            {
+                await notifier.ReminderFiredAsync(userId,
+                    new { log.Id, log.ReminderId, log.Title, log.Body, log.Channel, log.CreatedAtUtc, log.ReadAtUtc }, ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                _logger.LogWarning(ex, "Real-time push of notification {NotificationId} failed", log.Id);
+            }
+        }
     }
 
     private async Task DispatchAsync(
         AppDbContext db, IEmailSender emailSender, Reminder reminder,
-        bool emailEnabled, string? emailTo, DateTimeOffset nowUtc, CancellationToken ct)
+        bool emailEnabled, string? emailTo, DateTimeOffset nowUtc, List<NotificationLog> inApp, CancellationToken ct)
     {
         var (title, body) = await BuildPayloadAsync(db, reminder, ct);
 
         if (reminder.Channels.HasFlag(NotificationChannel.InApp))
         {
-            db.NotificationLogs.Add(new NotificationLog
+            var log = new NotificationLog
             {
+                UserId = reminder.UserId,
                 ReminderId = reminder.Id,
                 Title = title,
                 Body = body,
                 Channel = NotificationChannel.InApp,
                 CreatedAtUtc = nowUtc
-            });
-            // TODO: also push via IHubContext<ScheduleHub>.Clients.All.SendAsync("ReminderFired", ...)
-            // once the hub context is wired in from DayGrid.Api (Infrastructure has no reference
-            // to the Api project's Hubs namespace, by design — this is left as an integration
-            // point for whoever wires SignalR broadcast into this service).
+            };
+            db.NotificationLogs.Add(log);
+            inApp.Add(log);
         }
 
         if (reminder.Channels.HasFlag(NotificationChannel.Email) && emailEnabled && !string.IsNullOrWhiteSpace(emailTo))
@@ -127,6 +181,7 @@ public class ReminderDispatcherService : BackgroundService
                 reminder.AttemptCount++;
                 db.NotificationLogs.Add(new NotificationLog
                 {
+                    UserId = reminder.UserId,
                     ReminderId = reminder.Id,
                     Title = title,
                     Body = body,
@@ -148,7 +203,7 @@ public class ReminderDispatcherService : BackgroundService
     {
         if (reminder.FutureTaskId is { } futureTaskId)
         {
-            var task = await db.FutureTasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == futureTaskId, ct);
+            var task = await db.FutureTasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == futureTaskId && t.UserId == reminder.UserId, ct);
             var title = task?.Title ?? "Reminder";
             var body = task?.DueTime is { } dueTime
                 ? $"Due {task.DueDate:yyyy-MM-dd} at {dueTime:HH:mm}"
@@ -158,7 +213,7 @@ public class ReminderDispatcherService : BackgroundService
 
         if (reminder.ChecklistItemId is { } itemId)
         {
-            var item = await db.ChecklistItems.AsNoTracking().FirstOrDefaultAsync(i => i.Id == itemId, ct);
+            var item = await db.ChecklistItems.AsNoTracking().FirstOrDefaultAsync(i => i.Id == itemId && i.UserId == reminder.UserId, ct);
             var title = item?.Title ?? "Reminder";
             var body = item?.AnchorTime is { } anchorTime ? $"Scheduled for {anchorTime:HH:mm}" : "Scheduled today";
             return (title, body);

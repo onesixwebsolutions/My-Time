@@ -54,7 +54,7 @@ public class ChecklistsApiTests : IntegrationTestBase
         await AssertStatusAsync(HttpStatusCode.NotFound, await Client.PatchAsync($"{Url}/{unknown}/archive?archived=true", null));
         await AssertStatusAsync(HttpStatusCode.NotFound, await Client.DeleteAsync($"{Url}/{unknown}"));
         await AssertStatusAsync(HttpStatusCode.NotFound, await Client.PostAsJsonAsync($"{Url}/{unknown}/items", new { title = "x" }));
-        Assert.Empty((await GetOkAsync($"{Url}/{unknown}/items")).EnumerateArray());
+        await AssertStatusAsync(HttpStatusCode.NotFound, await Client.GetAsync($"{Url}/{unknown}/items"));
     }
 
     [Fact]

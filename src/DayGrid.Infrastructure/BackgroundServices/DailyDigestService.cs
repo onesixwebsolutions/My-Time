@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using DayGrid.Application.Time;
 using DayGrid.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
@@ -8,10 +9,9 @@ using Microsoft.Extensions.Logging;
 namespace DayGrid.Infrastructure.BackgroundServices;
 
 /// <summary>
-/// Checks <c>app_settings.daily_digest_time</c> once a minute and, when the current wall-clock
-/// time matches, triggers the "here's your day" email. Guards against firing twice in the same
-/// minute (and twice in the same day, once the underlying DB is wired up for it) via
-/// <see cref="_lastFiredDate"/>.
+/// Once a minute, checks every user's <c>app_settings.daily_digest_time</c> against that user's
+/// own wall clock (their time zone, not the server's) and triggers the "here's your day" digest
+/// on the matching minute — at most once per user per local date.
 /// </summary>
 public class DailyDigestService : BackgroundService
 {
@@ -19,14 +19,14 @@ public class DailyDigestService : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<DailyDigestService> _logger;
-    private readonly IAppClock _clock;
-    private DateOnly? _lastFiredDate;
+    private readonly IAppClockFactory _clockFactory;
+    private readonly ConcurrentDictionary<Guid, DateOnly> _lastFiredDate = new();
 
-    public DailyDigestService(IServiceScopeFactory scopeFactory, ILogger<DailyDigestService> logger, IAppClock clock)
+    public DailyDigestService(IServiceScopeFactory scopeFactory, ILogger<DailyDigestService> logger, IAppClockFactory clockFactory)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
-        _clock = clock;
+        _clockFactory = clockFactory;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -47,33 +47,42 @@ public class DailyDigestService : BackgroundService
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
+    /// <summary>Users whose digest fired on this tick (exposed for tests).</summary>
+    public IReadOnlyList<Guid> LastTickFired { get; private set; } = [];
+
     private async Task CheckAndFireAsync(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        var settings = await db.AppSettings.AsNoTracking().FirstOrDefaultAsync(ct);
-        if (settings?.DailyDigestTime is not { } digestTime || !settings.EmailEnabled)
-            return;
+        var candidates = await db.AppSettings.IgnoreQueryFilters().AsNoTracking()
+            .Where(s => s.UserId != null && s.EmailEnabled && s.DailyDigestTime != null)
+            .Select(s => new { UserId = s.UserId!.Value, s.TimeZone, DigestTime = s.DailyDigestTime!.Value })
+            .ToListAsync(ct);
 
-        // User-local wall clock (App:TimeZone), not the server's zone — UTC on Azure.
-        var now = _clock.Now;
-        var today = DateOnly.FromDateTime(now.DateTime);
-        var currentTime = TimeOnly.FromDateTime(now.DateTime);
+        var fired = new List<Guid>();
+        foreach (var candidate in candidates)
+        {
+            // Each user's own wall clock (falls back to App:TimeZone for an unknown zone id).
+            var now = _clockFactory.ForTimeZone(candidate.TimeZone).Now;
+            var today = DateOnly.FromDateTime(now.DateTime);
+            var currentTime = TimeOnly.FromDateTime(now.DateTime);
 
-        // Fire once per day, on the minute the configured digest time falls in.
-        if (_lastFiredDate == today)
-            return;
+            if (_lastFiredDate.TryGetValue(candidate.UserId, out var last) && last == today)
+                continue;
+            if (currentTime.Hour != candidate.DigestTime.Hour || currentTime.Minute != candidate.DigestTime.Minute)
+                continue;
 
-        if (currentTime.Hour != digestTime.Hour || currentTime.Minute != digestTime.Minute)
-            return;
+            _lastFiredDate[candidate.UserId] = today;
+            fired.Add(candidate.UserId);
 
-        _lastFiredDate = today;
+            // TODO: build the actual digest body (today's blocks + due checklist items + due future
+            // tasks, via IDayPlanBuilder in a scope acting as this user) and send it to the user's
+            // confirmed email. Still a stub — sending is deliberately not switched on yet.
+            _logger.LogInformation("Daily digest would fire now for user {UserId} ({Date}, {TimeZone})",
+                candidate.UserId, today, candidate.TimeZone);
+        }
 
-        // TODO: build the actual digest body (today's blocks + due checklist items + due future
-        // tasks, reusing IDayPlanBuilder) and send it via IEmailSender to settings.EmailTo. Left
-        // as a stub for Phase 6 — the scheduling/trigger logic above is the part worth getting
-        // right first; the email template is comparatively mechanical.
-        _logger.LogInformation("Daily digest would fire now for {Date} (email body not yet implemented)", today);
+        LastTickFired = fired;
     }
 }

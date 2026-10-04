@@ -1,7 +1,8 @@
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { NotificationLogEntry, NotificationsApi } from '../core/api/notifications.api';
+import { AuthService } from '../core/auth/auth.service';
 
 // Logo: the sidebar tile keeps its 32px / 9px-radius footprint and the accent->purple-500
 // gradient; only the "D" glyph is replaced by the One Six constellation mark (inline so it
@@ -14,7 +15,7 @@ import { NotificationLogEntry, NotificationsApi } from '../core/api/notification
 // etc.) automatically follow the active theme.
 const POLL_INTERVAL_MS = 20_000;
 
-/** localStorage key for the theme toggle (also read by the inline script in index.html). */
+/** localStorage key for the theme toggle (also read by the pre-paint script src/assets/theme-init.js). */
 export const THEME_STORAGE_KEY = 'daygrid-theme';
 
 type Theme = 'dark' | 'light';
@@ -213,6 +214,67 @@ function initialTheme(): Theme {
           >
             {{ theme() === 'dark' ? '☾' : '☀' }}
           </button>
+
+          <div class="relative">
+            <button
+              type="button"
+              (click)="userMenuOpen.set(!userMenuOpen())"
+              aria-haspopup="menu"
+              [attr.aria-expanded]="userMenuOpen()"
+              aria-controls="user-menu"
+              [attr.aria-label]="'Account menu for ' + (user()?.displayName || user()?.email)"
+              class="flex h-[34px] items-center gap-2 rounded-[9px] px-1.5 text-muted transition-colors hover:bg-raised2 hover:text-text"
+            >
+              <span
+                class="grid h-[26px] w-[26px] place-items-center rounded-full bg-accent-soft text-[11px] font-bold text-accent"
+                aria-hidden="true"
+                >{{ initials() }}</span
+              >
+              <span class="hidden max-w-[140px] truncate text-[12.5px] font-semibold text-text lg:block">{{
+                user()?.displayName
+              }}</span>
+            </button>
+
+            @if (userMenuOpen()) {
+              <div class="fixed inset-0 z-10" (click)="userMenuOpen.set(false)"></div>
+              <div
+                id="user-menu"
+                role="menu"
+                (keydown.escape)="userMenuOpen.set(false)"
+                class="absolute right-0 top-[42px] z-20 w-[240px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-card border border-border bg-raised py-1 shadow-[var(--shadow)]"
+              >
+                <div class="border-b border-border px-3.5 py-2.5">
+                  <b class="block truncate text-[13px] font-semibold text-text" data-testid="user-menu-name">{{ user()?.displayName }}</b>
+                  <span class="block truncate text-[11.5px] text-muted" data-testid="user-menu-email">{{ user()?.email }}</span>
+                </div>
+                <a
+                  role="menuitem"
+                  routerLink="/account"
+                  (click)="userMenuOpen.set(false)"
+                  class="block px-3.5 py-2 text-[13px] text-text hover:bg-raised2"
+                  >Account</a
+                >
+                @if (isAdmin()) {
+                  <a
+                    role="menuitem"
+                    routerLink="/admin/users"
+                    (click)="userMenuOpen.set(false)"
+                    class="block px-3.5 py-2 text-[13px] text-text hover:bg-raised2"
+                    >Admin · Users</a
+                  >
+                }
+                <button
+                  type="button"
+                  role="menuitem"
+                  (click)="signOut()"
+                  [disabled]="signingOut()"
+                  class="block w-full border-t border-border px-3.5 py-2 text-left text-[13px] text-danger hover:bg-raised2 disabled:opacity-60"
+                >
+                  {{ signingOut() ? 'Signing out…' : 'Sign out' }}
+                </button>
+              </div>
+            }
+          </div>
         </header>
 
         <div class="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 pb-16 md:px-6">
@@ -224,7 +286,21 @@ function initialTheme(): Theme {
 })
 export class AppShellComponent implements OnInit, OnDestroy {
   private readonly api = inject(NotificationsApi);
+  private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
   private pollHandle?: ReturnType<typeof setInterval>;
+
+  protected readonly user = this.auth.currentUser;
+  protected readonly isAdmin = this.auth.isAdmin;
+  protected readonly userMenuOpen = signal(false);
+  protected readonly signingOut = signal(false);
+  protected readonly initials = computed(() => {
+    const u = this.user();
+    const source = (u?.displayName || u?.email || '?').trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    const letters = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : source.slice(0, 2);
+    return letters.toUpperCase();
+  });
 
   protected readonly theme = signal<Theme>(initialTheme());
 
@@ -240,6 +316,18 @@ export class AppShellComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.pollHandle) clearInterval(this.pollHandle);
+  }
+
+  /** POST /auth/logout (state is cleared even if it fails), then back to the login page. */
+  protected signOut(): void {
+    if (this.signingOut()) return;
+    this.signingOut.set(true);
+    const done = () => {
+      this.signingOut.set(false);
+      this.userMenuOpen.set(false);
+      void this.router.navigateByUrl('/login');
+    };
+    this.auth.logout().subscribe({ complete: done, error: done });
   }
 
   protected toggleTheme(): void {

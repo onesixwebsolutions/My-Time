@@ -1,5 +1,7 @@
 -- DayGrid — realistic sample data for local testing.
--- Run after db/init.sql. Uses psql \gset to thread generated UUIDs between statements,
+-- Run after the schema migrations (db/migrations; the API applies them at startup) and BEFORE
+-- the first account registers: these rows have no owner (user_id NULL) and the first account
+-- claims them. Uses psql \gset to thread generated UUIDs between statements,
 -- so run this file with `psql`, not through a generic SQL driver that doesn't support it.
 \set ON_ERROR_STOP on
 

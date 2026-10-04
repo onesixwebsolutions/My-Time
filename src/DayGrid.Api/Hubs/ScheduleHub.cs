@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 
 namespace DayGrid.Api.Hubs;
@@ -20,7 +21,12 @@ namespace DayGrid.Api.Hubs;
 /// <item><description><c>PlanInvalidated</c> — payload: <c>{ date }</c>. Fires when a
 /// template/assignment is edited so clients know to refetch <c>/today</c>.</description></item>
 /// </list>
+///
+/// Requires an authenticated, email-confirmed user (cookie auth; anonymous negotiate gets 401).
+/// Events are only ever sent to <c>Clients.User(userId)</c> — never broadcast — via
+/// <see cref="SignalRUserNotifier"/>.
 /// </summary>
+[Authorize]
 public class ScheduleHub : Hub
 {
 }

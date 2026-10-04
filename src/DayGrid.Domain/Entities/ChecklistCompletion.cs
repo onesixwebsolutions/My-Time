@@ -1,14 +1,20 @@
 using DayGrid.Domain.Enums;
 
+using System.Text.Json.Serialization;
+
 namespace DayGrid.Domain.Entities;
 
 /// <summary>
 /// One row per tick of a <see cref="ChecklistItem"/> occurrence. Absence of a row for a
 /// given (ChecklistItemId, OccurrenceDate) means the item is not done for that date.
 /// </summary>
-public class ChecklistCompletion
+public class ChecklistCompletion : IUserOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>Owning account. Null only for legacy rows not yet claimed by the first registered user.</summary>
+    [JsonIgnore]
+    public Guid? UserId { get; set; }
 
     public Guid ChecklistItemId { get; set; }
     public ChecklistItem? ChecklistItem { get; set; }

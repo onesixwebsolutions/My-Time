@@ -10,13 +10,10 @@ services:
       - "5432:5432"
     volumes:
       - daygrid-db-data:/var/lib/postgresql/data
-      # Applies the hand-written reference schema on first boot only (Postgres only runs
-      # /docker-entrypoint-initdb.d scripts against an empty data directory). Once you have
-      # the .NET SDK locally, prefer `dotnet ef database update` instead — see README.md.
-      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-      # Realistic sample data (checklists, timetable, future tasks, standalone Tasks) —
-      # verified against this exact schema; see README.md "Verified with sample data".
-      - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      # No SQL is mounted into /docker-entrypoint-initdb.d any more: the API applies the
+      # versioned migrations in db/migrations at startup (Database__InitializeSchema below).
+      # Sample data: once the API has started, `psql -f db/seed.sql` BEFORE registering the
+      # first account (which then claims it) — see README.md.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U daygrid -d daygrid"]
       interval: 5s
@@ -34,6 +31,12 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Default: "Host=db;Database=daygrid;Username=daygrid;Password=dev"
+      Database__InitializeSchema: "true"
+      # Links in account emails point at the web container.
+      App__PublicBaseUrl: "${PUBLIC_BASE_URL:-http://localhost:4200}"
+      # Smtp (default) or Pickup (.eml files inside the container under Email__PickupDirectory).
+      Email__Mode: "${EMAIL_MODE:-Smtp}"
+      Email__PickupDirectory: "/tmp/daygrid-mail"
       Email__Host: "${EMAIL_HOST:-smtp.gmail.com}"
       Email__Port: "${EMAIL_PORT:-587}"
       Email__UseStartTls: "true"

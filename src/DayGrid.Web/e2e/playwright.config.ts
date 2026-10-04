@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+import { STORAGE_STATE } from './support/env';
+
 // End-to-end tests against the real stack: the published DayGrid.Api serving the production
 // Angular build from wwwroot, backed by a private embedded PostgreSQL in a throwaway temp dir
 // (see global-setup.ts). Uses the locally installed Google Chrome — no browser download.
@@ -22,6 +24,10 @@ export default defineConfig({
   use: {
     channel: 'chrome',
     headless: true,
+    // Production-mode server over HTTPS with the ASP.NET dev certificate (which may be untrusted).
+    ignoreHTTPSErrors: true,
+    // Every context starts signed in as the first account (Admin) — see global-setup.ts.
+    storageState: STORAGE_STATE,
     // The API's App:TimeZone is Asia/Kolkata; keep the browser's local clock on the same zone
     // so the Today page's client-side clock and the server's "now" agree.
     timezoneId: 'Asia/Kolkata',

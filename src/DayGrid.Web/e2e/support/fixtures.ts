@@ -1,7 +1,8 @@
-import { APIRequestContext, ConsoleMessage, Request, Response, expect, test as base } from '@playwright/test';
+import { APIRequestContext, ConsoleMessage, Page, Request, Response, expect, test as base } from '@playwright/test';
 import * as fs from 'node:fs';
 
-import { E2eState, STATE_FILE } from './env';
+import { newApiContext, randomIp } from './auth';
+import { E2eState, STATE_FILE, STORAGE_STATE } from './env';
 
 export interface BrowserGuard {
   /** Declares an /api response >= 400 this test deliberately provokes. */
@@ -10,6 +11,8 @@ export interface BrowserGuard {
   allowConsoleError(pattern: RegExp): void;
   /** Problems recorded so far (for tests that want to assert mid-flow). */
   problems(): string[];
+  /** Applies the same checks to another page (e.g. a second user's browser context). */
+  watch(page: Page): void;
 }
 
 function resolveBaseURL(): string {
@@ -25,15 +28,26 @@ function resolveBaseURL(): string {
  *  - any uncaught page error,
  *  - any /api response with status >= 400 the test didn't declare via allowApiError,
  *  - any failed request (navigation aborts excepted).
- * `api` is a request context on the same origin for seeding/verifying data.
+ * `api` is a request context on the same origin, signed in as the first account (Admin, the
+ * same session as the browser's storageState), that sends X-XSRF-TOKEN on unsafe requests.
+ * Every test gets its own client IP (X-Forwarded-For) so the auth rate limiter's per-IP budget
+ * is per test.
  */
-export const test = base.extend<{ guard: BrowserGuard; api: APIRequestContext }>({
+export const test = base.extend<{ guard: BrowserGuard; api: APIRequestContext; clientIp: string }>({
   baseURL: async ({}, use) => {
     await use(resolveBaseURL());
   },
 
-  api: async ({ playwright, baseURL }, use) => {
-    const ctx = await playwright.request.newContext({ baseURL });
+  clientIp: async ({}, use) => {
+    await use(randomIp());
+  },
+
+  extraHTTPHeaders: async ({ clientIp }, use) => {
+    await use({ 'X-Forwarded-For': clientIp });
+  },
+
+  api: async ({ baseURL, clientIp }, use) => {
+    const ctx = await newApiContext(baseURL!, { storageState: STORAGE_STATE, ip: clientIp });
     await use(ctx);
     await ctx.dispose();
   },
@@ -41,7 +55,8 @@ export const test = base.extend<{ guard: BrowserGuard; api: APIRequestContext }>
   guard: [
     async ({ page }, use, testInfo) => {
       const problems: string[] = [];
-      const allowedApi: { urlPart: string; status: number }[] = [];
+      // A signed-out page asking "who am I?" gets 401 — the expected answer, not a failure.
+      const allowedApi: { urlPart: string; status: number }[] = [{ urlPart: '/api/v1/auth/me', status: 401 }];
       const allowedConsole: RegExp[] = [];
 
       const onConsole = (msg: ConsoleMessage) => {
@@ -49,6 +64,9 @@ export const test = base.extend<{ guard: BrowserGuard; api: APIRequestContext }>
         const text = msg.text();
         if (allowedConsole.some((re) => re.test(text))) return;
         const loc = msg.location();
+        // Chrome logs every 4xx/5xx fetch as "Failed to load resource"; a declared API error is fine.
+        const failed = /^Failed to load resource: the server responded with a status of (\d+)/.exec(text);
+        if (failed && allowedApi.some((a) => (loc?.url ?? '').includes(a.urlPart) && a.status === Number(failed[1]))) return;
         problems.push(`console.error: ${text}${loc?.url ? ` (${loc.url}:${loc.lineNumber})` : ''}`);
       };
       const onPageError = (err: Error) => problems.push(`pageerror: ${err.message}\n${err.stack ?? ''}`);
@@ -66,15 +84,19 @@ export const test = base.extend<{ guard: BrowserGuard; api: APIRequestContext }>
         problems.push(`requestfailed: ${req.method()} ${req.url()} (${errorText})`);
       };
 
-      page.on('console', onConsole);
-      page.on('pageerror', onPageError);
-      page.on('response', onResponse);
-      page.on('requestfailed', onRequestFailed);
+      const attach = (p: Page) => {
+        p.on('console', onConsole);
+        p.on('pageerror', onPageError);
+        p.on('response', onResponse);
+        p.on('requestfailed', onRequestFailed);
+      };
+      attach(page);
 
       await use({
         allowApiError: (urlPart, status) => allowedApi.push({ urlPart, status }),
         allowConsoleError: (pattern) => allowedConsole.push(pattern),
-        problems: () => [...problems]
+        problems: () => [...problems],
+        watch: attach
       });
 
       page.off('console', onConsole);

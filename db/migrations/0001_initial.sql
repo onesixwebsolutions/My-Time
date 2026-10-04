@@ -1,10 +1,10 @@
--- DayGrid — standalone reference schema (PostgreSQL 16)
+-- DayGrid migration 0001 — initial schema (PostgreSQL 13+; Azure Database for PostgreSQL
+-- Flexible Server compatible).
 --
--- This is NOT an EF Core migration. It is a hand-written DDL script matching plan section 4
--- exactly, meant to be run directly against Postgres (e.g. mounted into the docker-compose
--- Postgres container's /docker-entrypoint-initdb.d/) so there's a working schema before
--- `dotnet ef` tooling is available. Once EF migrations exist, treat those as the source of
--- truth for schema evolution and keep this file as a quick-start / documentation artifact.
+-- This is the former db/init.sql, unchanged apart from this header. Applied in order with the
+-- other db/migrations/NNNN_*.sql scripts by SchemaMigrator (one transaction per script, tracked in
+-- schema_migrations). Databases created from the old init.sql are detected and baselined at
+-- 0001 instead of re-running this script. NEVER edit an applied migration — add a new one.
 
 -- No extensions needed: gen_random_uuid() is built into PostgreSQL 13+. (uuid-ossp/pgcrypto
 -- were dropped — Azure Database for PostgreSQL rejects CREATE EXTENSION unless allow-listed.)

@@ -1,9 +1,15 @@
+using System.Text.Json.Serialization;
+
 namespace DayGrid.Domain.Entities;
 
 /// <summary>A grouping container for checklist items — "Morning Routine", "Work", "Health".</summary>
-public class Checklist
+public class Checklist : IUserOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>Owning account. Null only for legacy rows not yet claimed by the first registered user.</summary>
+    [JsonIgnore]
+    public Guid? UserId { get; set; }
 
     public string Name { get; set; } = string.Empty;
     public string? Description { get; set; }

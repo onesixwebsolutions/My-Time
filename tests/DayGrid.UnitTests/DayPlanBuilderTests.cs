@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using DayGrid.Domain.Entities;
 using DayGrid.Domain.Enums;
 using DayGrid.Domain.ValueObjects;
@@ -154,10 +155,20 @@ public class DayPlanBuilderTests
     [Fact]
     public async Task DayOverrideUseTemplate_WithDeletedTemplate_FallsThroughToNormalResolution()
     {
-        using var db = TestDb.Create();
+        var dbName = Guid.NewGuid().ToString();
+        using var db = TestDb.Create(dbName);
         var def = Template(db, "Default", isDefault: true);
-        db.DayOverrides.Add(new DayOverride { Date = Monday, Mode = DayOverrideMode.UseTemplate, TemplateId = Guid.NewGuid() });
+        var doomed = Template(db, "Doomed");
+        db.DayOverrides.Add(new DayOverride { Date = Monday, Mode = DayOverrideMode.UseTemplate, TemplateId = doomed.Id });
         await db.SaveChangesAsync();
+
+        // Delete the template from another context: InMemory does not cascade to untracked rows,
+        // leaving a dangling override exactly like a stale reference would look.
+        using (var other = TestDb.Create(dbName))
+        {
+            other.TimetableTemplates.Remove(await other.TimetableTemplates.SingleAsync(t => t.Id == doomed.Id));
+            await other.SaveChangesAsync();
+        }
 
         var plan = await Builder(db, Monday, new TimeOnly(10, 0)).BuildAsync(Monday);
 

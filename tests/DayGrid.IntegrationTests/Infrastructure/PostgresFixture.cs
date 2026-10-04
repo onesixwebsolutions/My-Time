@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
-using System.Text.RegularExpressions;
 using DayGrid.Api;
+using DayGrid.Application.Security;
 using DayGrid.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -20,7 +20,7 @@ public sealed class PostgresCollection : ICollectionFixture<PostgresFixture>
 /// <summary>
 /// One real PostgreSQL 16 server for the whole test run: a fresh PgServer instance directory
 /// (random instance id, deleted on stop) on a free ephemeral TCP port, a "daygrid_it" database
-/// created through the real <see cref="SchemaBootstrapper"/> from db/init.sql, and a single
+/// created through the real <see cref="SchemaMigrator"/> (db/migrations), and a single
 /// <see cref="IntegrationApiFactory"/> pointed at it. Only the downloaded Postgres binaries are
 /// cached between runs (under %TEMP%\daygrid-integration-tests).
 /// </summary>
@@ -31,8 +31,10 @@ public sealed class PostgresFixture : IAsyncLifetime
     private const int ForbiddenPort = 5432; // the developer's own Postgres service lives here
 
     private PgServer? _server;
-    private string? _appSettingsSeedSql;
     private string? _truncateSql;
+
+    /// <summary>Tables a reset keeps: migration history and the role rows seeded by 0002.</summary>
+    private static readonly string[] PreservedTables = ["schema_migrations", "roles", "data_protection_keys"];
 
     public static string CacheRoot { get; } = Path.Combine(Path.GetTempPath(), "daygrid-integration-tests");
 
@@ -42,7 +44,8 @@ public sealed class PostgresFixture : IAsyncLifetime
     public IntegrationApiFactory Factory { get; private set; } = null!;
 
     public static string RepoRoot { get; } = FindRepoRoot();
-    public static string InitSqlPath => Path.Combine(RepoRoot, "db", "init.sql");
+    /// <summary>The former db/init.sql — what legacy databases were created from.</summary>
+    public static string InitSqlPath => Path.Combine(RepoRoot, "db", "migrations", "0001_initial.sql");
     public static string SeedSqlPath => Path.Combine(RepoRoot, "db", "seed.sql");
 
     /// <summary>Folder holding the embedded server's bin\ (initdb, pg_ctl, postgres, ...).</summary>
@@ -77,14 +80,9 @@ public sealed class PostgresFixture : IAsyncLifetime
         await WaitUntilAcceptingConnectionsAsync(AdminConnectionString);
         await ExecuteAdminAsync($"CREATE DATABASE \"{DatabaseName}\"");
 
-        var created = await SchemaBootstrapper.EnsureSchemaAsync(ConnectionString, InitSqlPath, NullLogger.Instance);
-        if (!created)
-            throw new InvalidOperationException("SchemaBootstrapper did not create the schema on a brand-new database.");
-
-        var initSql = await File.ReadAllTextAsync(InitSqlPath);
-        _appSettingsSeedSql = Regex.Match(initSql, @"INSERT INTO app_settings[\s\S]*?;").Value;
-        if (string.IsNullOrEmpty(_appSettingsSeedSql))
-            throw new InvalidOperationException("Could not find the app_settings seed row in init.sql.");
+        var applied = await SchemaMigrator.MigrateAsync(ConnectionString, NullLogger.Instance);
+        if (applied.Count != SchemaMigrator.LoadEmbedded().Count)
+            throw new InvalidOperationException("SchemaMigrator did not apply every migration to a brand-new database.");
 
         Factory = new IntegrationApiFactory(ConnectionString);
         _ = Factory.Server; // boot the host once, up front
@@ -105,7 +103,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         }
     }
 
-    /// <summary>Empties every table and restores the single app_settings row from init.sql.</summary>
+    /// <summary>Empties every table except migration history and the seeded roles.</summary>
     public async Task ResetAsync()
     {
         await using var connection = new NpgsqlConnection(ConnectionString);
@@ -119,14 +117,15 @@ public sealed class PostgresFixture : IAsyncLifetime
             await using (var reader = await cmd.ExecuteReaderAsync())
             {
                 while (await reader.ReadAsync())
-                    tables.Add('"' + reader.GetString(0) + '"');
+                    if (!PreservedTables.Contains(reader.GetString(0)))
+                        tables.Add('"' + reader.GetString(0) + '"');
             }
             _truncateSql = $"TRUNCATE TABLE {string.Join(", ", tables)} RESTART IDENTITY CASCADE;";
         }
 
         try
         {
-            await using var reset = new NpgsqlCommand("SET lock_timeout = '10s';" + _truncateSql + _appSettingsSeedSql, connection);
+            await using var reset = new NpgsqlCommand("SET lock_timeout = '10s';" + _truncateSql, connection);
             await reset.ExecuteNonQueryAsync();
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.LockNotAvailable)
@@ -149,8 +148,18 @@ public sealed class PostgresFixture : IAsyncLifetime
         return string.Join("\n", lines);
     }
 
+    /// <summary>A system (unfiltered) context — no tenant filtering or stamping.</summary>
     public AppDbContext CreateDbContext(string? connectionString = null) =>
         new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString ?? ConnectionString).Options);
+
+    /// <summary>A context acting as <paramref name="userId"/>: filtered to and stamping that user.</summary>
+    public AppDbContext CreateUserDbContext(Guid userId, string? connectionString = null) =>
+        new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(connectionString ?? ConnectionString).Options, new FixedUser(userId));
+
+    private sealed class FixedUser(Guid userId) : ICurrentUser
+    {
+        public Guid? UserId { get; } = userId;
+    }
 
     /// <summary>Creates an empty database (no schema) and returns its connection string.</summary>
     public async Task<string> CreateEmptyDatabaseAsync(string prefix)

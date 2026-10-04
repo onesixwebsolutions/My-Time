@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 
-import { E2eState, STATE_FILE } from './support/env';
+import { E2eState, STATE_FILE, STORAGE_STATE } from './support/env';
 import { killTree, removeDirWithRetry, stopEmbeddedPostgres } from './support/processes';
 
 /** Kills the API process tree, stops its private Postgres and deletes the temp data dir. */
@@ -16,5 +16,6 @@ export default async function globalTeardown(): Promise<void> {
   stopEmbeddedPostgres(state.dataDir);
   await removeDirWithRetry(state.dataDir);
   fs.rmSync(STATE_FILE, { force: true });
+  fs.rmSync(STORAGE_STATE, { force: true });
   if (fs.existsSync(state.dataDir)) console.warn(`[e2e] Could not fully delete ${state.dataDir}`);
 }

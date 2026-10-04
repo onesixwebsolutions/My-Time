@@ -1,5 +1,6 @@
 using DayGrid.Infrastructure.Data;
 using MysticMind.PostgresEmbed;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace DayGrid.Api;
@@ -12,9 +13,10 @@ namespace DayGrid.Api;
 /// %LocalAppData%\DayGrid\pgdata, is not a system service, and is started/stopped alongside the
 /// app — nothing else on the machine is touched.
 ///
-/// First run creates the "daygrid" database and applies db/init.sql. Every run after that just
-/// starts Postgres against the same data directory, so data persists across restarts exactly
-/// like a normal installed database would.
+/// First run creates the "daygrid" database. Every run (first or not) then applies any pending
+/// schema migrations (db/migrations, see SchemaMigrator) — so an existing desktop install is
+/// upgraded in place — and data persists across restarts exactly like a normal installed
+/// database would.
 ///
 /// Known limitation: PgServer downloads the actual Postgres binaries from the network the first
 /// time it runs on a machine (cached afterward). A machine with no internet access on first
@@ -48,7 +50,7 @@ public static class EmbeddedDatabase
         ["logging_collector"] = "on"
     };
 
-    public static async Task<(PgServer Server, string ConnectionString)> StartAsync(string dataDir, string schemaSqlPath)
+    public static async Task<(PgServer Server, string ConnectionString)> StartAsync(string dataDir)
     {
         var actualDataDir = Path.Combine(dataDir, "pg_embed", InstanceId.ToString(), "data");
         var isFirstRun = !Directory.Exists(actualDataDir);
@@ -72,19 +74,22 @@ public static class EmbeddedDatabase
 
         await WaitUntilAcceptingConnectionsAsync(adminConnectionString);
 
-        if (isFirstRun)
+        // Also covers a first run that died between initdb and CREATE DATABASE.
+        await using (var adminConnection = new NpgsqlConnection(adminConnectionString))
         {
-            await using (var adminConnection = new NpgsqlConnection(adminConnectionString))
+            await adminConnection.OpenAsync();
+            await using var existsCommand = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = @name)", adminConnection);
+            existsCommand.Parameters.AddWithValue("name", DatabaseName);
+            if (!(bool)(await existsCommand.ExecuteScalarAsync())!)
             {
-                await adminConnection.OpenAsync();
                 await using var createDbCommand = new NpgsqlCommand($"CREATE DATABASE \"{DatabaseName}\"", adminConnection);
                 await createDbCommand.ExecuteNonQueryAsync();
             }
-
-            await SchemaBootstrapper.ApplySchemaAsync(appConnectionString, schemaSqlPath);
-
-            Console.WriteLine("[EmbeddedDatabase] Schema applied — the daygrid database is ready.");
         }
+
+        var applied = await SchemaMigrator.MigrateAsync(appConnectionString, NullLogger.Instance);
+        if (applied.Count > 0)
+            Console.WriteLine($"[EmbeddedDatabase] Applied schema migrations {string.Join(", ", applied)} — the daygrid database is ready.");
 
         return (server, appConnectionString);
     }

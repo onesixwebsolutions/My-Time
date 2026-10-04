@@ -1,3 +1,4 @@
+using DayGrid.Application.Security;
 using DayGrid.Application.Time;
 using DayGrid.Domain.Entities;
 using DayGrid.Domain.Enums;
@@ -212,8 +213,12 @@ public static class FutureTasksEndpoints
         var group = app.MapGroup("/api/v1/future-tasks/{id:guid}/reminders").WithTags("Future Tasks");
 
         group.MapGet("/", async (AppDbContext db, Guid id, CancellationToken ct) =>
-            Results.Ok((await db.Reminders.AsNoTracking().Where(r => r.FutureTaskId == id).ToListAsync(ct)).Select(ToReminderDto)))
-            .WithName("ListFutureTaskReminders");
+        {
+            if (!await db.FutureTasks.AnyAsync(t => t.Id == id, ct))
+                return Results.NotFound();
+            return Results.Ok((await db.Reminders.AsNoTracking().Where(r => r.FutureTaskId == id).ToListAsync(ct)).Select(ToReminderDto));
+        })
+        .WithName("ListFutureTaskReminders");
 
         group.MapPost("/", async (AppDbContext db, IAppClock clock, Guid id, CreateReminderRequest request, CancellationToken ct) =>
         {
@@ -282,9 +287,15 @@ public static class FutureTasksEndpoints
         })
         .WithName("MarkAllNotificationsRead");
 
-        group.MapPost("/test", async (AppDbContext db, IEmailSender emailSender, ILogger<Program> logger, CancellationToken ct) =>
+        group.MapPost("/test", async (AppDbContext db, ICurrentUser currentUser, IEmailSender emailSender, ILogger<Program> logger, CancellationToken ct) =>
         {
             var settings = await db.AppSettings.AsNoTracking().FirstOrDefaultAsync(ct);
+            // Email goes to the caller's own confirmed account address — never to an arbitrary one.
+            var userId = currentUser.UserId;
+            var emailTo = await db.Users.AsNoTracking()
+                .Where(u => u.Id == userId && u.EmailConfirmed)
+                .Select(u => u.Email)
+                .FirstOrDefaultAsync(ct);
 
             db.NotificationLogs.Add(new NotificationLog
             {
@@ -294,11 +305,11 @@ public static class FutureTasksEndpoints
             });
 
             string? emailError = null;
-            if (settings?.EmailEnabled == true && !string.IsNullOrWhiteSpace(settings.EmailTo))
+            if (settings?.EmailEnabled == true && !string.IsNullOrWhiteSpace(emailTo))
             {
                 try
                 {
-                    await emailSender.SendAsync(settings.EmailTo, "DayGrid test notification", "<p>SMTP is configured correctly.</p>", ct);
+                    await emailSender.SendAsync(emailTo, "DayGrid test notification", "<p>SMTP is configured correctly.</p>", ct);
                 }
                 catch (Exception ex)
                 {
@@ -384,8 +395,8 @@ public static class FutureTasksEndpoints
         };
     }
 
-    // Due date/time are wall-clock values in the user's zone (IAppClock.TimeZone, from
-    // App:TimeZone) — not the server's zone, which is UTC on Azure App Service.
+    // Due date/time are wall-clock values in the user's zone (IAppClock.TimeZone: the user's
+    // app_settings.time_zone) — not the server's zone, which is UTC on Azure App Service.
     private static DateTimeOffset ComputeFireAtUtc(DateOnly dueDate, TimeOnly? dueTime, int offsetMinutes, TimeZoneInfo timeZone)
     {
         var wallClock = dueDate.ToDateTime(dueTime ?? new TimeOnly(9, 0), DateTimeKind.Unspecified);

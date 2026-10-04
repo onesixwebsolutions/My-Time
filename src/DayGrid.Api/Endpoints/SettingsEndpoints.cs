@@ -16,29 +16,25 @@ public static class SettingsEndpoints
     {
         var group = app.MapGroup("/api/v1").WithTags("Settings");
 
-        group.MapGet("/settings", async (AppDbContext db, CancellationToken ct) =>
-        {
-            var settings = await db.AppSettings.AsNoTracking().FirstOrDefaultAsync(s => s.Id == 1, ct);
-            return settings is null ? Results.NotFound() : Results.Ok(settings);
-        })
+        // One row per user (tenant-filtered). Created at registration; recreated with defaults if missing.
+        group.MapGet("/settings", async (AppDbContext db, IAppClockFactory clocks, CancellationToken ct) =>
+            Results.Ok(await GetOrCreateSettingsAsync(db, clocks, ct)))
         .WithName("GetSettings");
 
-        group.MapPut("/settings", async (AppDbContext db, UpdateSettingsRequest request, CancellationToken ct) =>
+        group.MapPut("/settings", async (AppDbContext db, IAppClockFactory clocks, UpdateSettingsRequest request, CancellationToken ct) =>
         {
             // time_zone and theme are NOT NULL columns — a null here used to surface as a 500 from the DB.
             if (string.IsNullOrWhiteSpace(request.TimeZone))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["timeZone"] = ["Time zone is required."] });
+            // It drives every "today"/"now" for this user, so it must be a real IANA zone.
+            if (!clocks.IsValidTimeZone(request.TimeZone))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["timeZone"] = ["Time zone must be a valid IANA time zone id, e.g. 'Asia/Kolkata'."] });
             if (string.IsNullOrWhiteSpace(request.Theme))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["theme"] = ["Theme is required."] });
 
-            var settings = await db.AppSettings.FirstOrDefaultAsync(s => s.Id == 1, ct);
-            if (settings is null)
-            {
-                settings = new AppSetting { Id = 1 };
-                db.AppSettings.Add(settings);
-            }
+            var settings = await GetOrCreateSettingsAsync(db, clocks, ct, tracked: true);
 
-            settings.TimeZone = request.TimeZone;
+            settings.TimeZone = request.TimeZone.Trim();
             settings.WeekStartsOn = request.WeekStartsOn;
             settings.DayStart = request.DayStart;
             settings.DayEnd = request.DayEnd;
@@ -136,5 +132,18 @@ public static class SettingsEndpoints
         .WithName("ImportBackup");
 
         return app;
+    }
+
+    private static async Task<AppSetting> GetOrCreateSettingsAsync(AppDbContext db, IAppClockFactory clocks, CancellationToken ct, bool tracked = false)
+    {
+        var query = tracked ? db.AppSettings : db.AppSettings.AsNoTracking();
+        var settings = await query.FirstOrDefaultAsync(ct);
+        if (settings is not null)
+            return settings;
+
+        settings = new AppSetting { TimeZone = clocks.DefaultTimeZoneId }; // UserId stamped on save
+        db.AppSettings.Add(settings);
+        await db.SaveChangesAsync(ct);
+        return settings;
     }
 }

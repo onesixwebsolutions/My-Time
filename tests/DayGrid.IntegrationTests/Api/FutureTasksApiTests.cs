@@ -247,12 +247,12 @@ public class FutureTasksApiTests : IntegrationTestBase
         await AssertStatusAsync(HttpStatusCode.NoContent, await Client.PatchAsync("/api/v1/notifications/read-all", null));
         Assert.Empty((await GetOkAsync("/api/v1/notifications?unreadOnly=true")).EnumerateArray());
 
-        // init.sql seeds email_enabled=true + an address; the sender is faked.
+        // New accounts get email_enabled=true; mail goes to the account address; the sender is faked.
         var test = await ReadJsonAsync(await Client.PostAsync("/api/v1/notifications/test", null));
         Assert.True(test.GetProperty("inAppSent").GetBoolean());
         Assert.True(test.GetProperty("emailAttempted").GetBoolean());
         Assert.Equal(JsonValueKind.Null, test.GetProperty("emailError").ValueKind);
-        Assert.Single(Fx.Factory.Email.Sent);
+        Assert.Equal(UserEmail, Assert.Single(Fx.Factory.Email.Sent).To);
         Assert.Equal(3, (await GetOkAsync("/api/v1/notifications")).GetArrayLength());
 
         Fx.Factory.Email.FailWith = new InvalidOperationException("smtp down");

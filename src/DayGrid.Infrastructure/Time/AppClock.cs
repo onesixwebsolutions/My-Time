@@ -1,11 +1,11 @@
 using DayGrid.Application.Time;
+using TimeZoneConverter;
 
 namespace DayGrid.Infrastructure.Time;
 
 /// <summary>
 /// <see cref="IAppClock"/> backed by a <see cref="TimeProvider"/> (TimeProvider.System in
-/// production, a fake in tests) and an IANA/Windows time zone id. .NET 8 resolves IANA ids such
-/// as "Asia/Kolkata" on both Windows and Linux.
+/// production, a fake in tests) and an IANA (or Windows) time zone id.
 /// </summary>
 public sealed class AppClock : IAppClock
 {
@@ -20,36 +20,42 @@ public sealed class AppClock : IAppClock
     }
 
     // Windows resolves IANA ids only through ICU, which is unavailable when the app runs with
-    // InvariantGlobalization=true (as DayGrid.Api does). Linux reads tzdata directly, so the first
-    // lookup succeeds there; on Windows fall back to the Windows id for the zones this app uses.
-    private static readonly Dictionary<string, string> IanaToWindowsFallback = new(StringComparer.OrdinalIgnoreCase)
+    // InvariantGlobalization=true (as DayGrid.Api does). TimeZoneConverter carries its own
+    // IANA <-> Windows mapping, so IANA ids (and Windows ids) resolve on every platform.
+    internal static TimeZoneInfo ResolveTimeZone(string id)
     {
-        ["Asia/Kolkata"] = "India Standard Time",
-        ["Asia/Calcutta"] = "India Standard Time",
-        ["Etc/UTC"] = "UTC",
-        ["UTC"] = "UTC"
-    };
+        if (TryResolveTimeZone(id, out var zone))
+            return zone;
 
-    private static TimeZoneInfo ResolveTimeZone(string id)
+        throw new TimeZoneNotFoundException(
+            $"Time zone '{id}' could not be resolved on this machine. Use an IANA id such as 'Asia/Kolkata'.");
+    }
+
+    public static bool TryResolveTimeZone(string? id, out TimeZoneInfo zone)
     {
+        zone = TimeZoneInfo.Utc;
+        if (string.IsNullOrWhiteSpace(id))
+            return false;
         try
         {
-            return TimeZoneInfo.FindSystemTimeZoneById(id);
-        }
-        catch (TimeZoneNotFoundException)
-        {
-            if ((TimeZoneInfo.TryConvertIanaIdToWindowsId(id, out var converted)
-                 || TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out converted)
-                 || IanaToWindowsFallback.TryGetValue(id, out converted))
-                && TimeZoneInfo.TryFindSystemTimeZoneById(converted!, out var zone))
+            if (TZConvert.TryGetTimeZoneInfo(id.Trim(), out var found))
             {
-                return zone;
+                zone = found;
+                return true;
             }
-
-            throw new TimeZoneNotFoundException(
-                $"App:TimeZone '{id}' could not be resolved on this machine. Use an IANA id (e.g. 'Asia/Kolkata') on Linux or a Windows id (e.g. 'India Standard Time') on Windows.");
         }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            // fall through
+        }
+        return false;
     }
+
+    /// <summary>True for a known IANA time zone id (what the API accepts from clients).</summary>
+    public static bool IsKnownIanaTimeZone(string? id) =>
+        !string.IsNullOrWhiteSpace(id)
+        && TZConvert.KnownIanaTimeZoneNames.Contains(id.Trim(), StringComparer.Ordinal)
+        && TryResolveTimeZone(id, out _);
 
     public TimeZoneInfo TimeZone { get; }
 

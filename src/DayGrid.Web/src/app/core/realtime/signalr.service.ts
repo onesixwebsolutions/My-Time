@@ -1,6 +1,8 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import * as signalR from '@microsoft/signalr';
 import { Subject } from 'rxjs';
+
+import { AuthService } from '../auth/auth.service';
 
 // Matches plan section 5.7 — /hubs/schedule events.
 export interface NowBlockChangedPayload {
@@ -35,6 +37,7 @@ export function retryDelayMs(attempt: number): number {
 
 @Injectable({ providedIn: 'root' })
 export class SignalrService {
+  private readonly auth = inject(AuthService);
   private connection: signalR.HubConnection | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private startAttempt = 0;
@@ -49,8 +52,15 @@ export class SignalrService {
   readonly itemCompleted$ = this.itemCompletedSubject.asObservable();
   readonly planInvalidated$ = this.planInvalidatedSubject.asObservable();
 
+  constructor() {
+    // The hub is [Authorize]: drop the connection as soon as the session ends (logout, account
+    // deletion, or a 401 from the API). The auth cookie rides along automatically (same origin).
+    this.auth.sessionEnded$.subscribe(() => this.disconnect());
+  }
+
+  /** Opens the hub connection — only while signed in (the hub would reject us with 401 otherwise). */
   connect(): void {
-    if (this.connection) return;
+    if (this.connection || !this.auth.isAuthenticated()) return;
 
     // Relative URL: in production the SPA is served from the same origin as the API.
     // The default withAutomaticReconnect() gives up after 4 attempts (~42s) and does not

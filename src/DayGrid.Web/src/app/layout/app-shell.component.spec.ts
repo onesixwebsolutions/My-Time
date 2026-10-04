@@ -1,8 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { Router, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 
 import { NotificationsApi } from '../core/api/notifications.api';
+import { FakeAuthService, fakeAuthService, makeUser, provideFakeAuth } from '../testing/auth-testing';
 import { AppShellComponent, THEME_STORAGE_KEY } from './app-shell.component';
 
 describe('AppShellComponent theme toggle', () => {
@@ -15,6 +16,7 @@ describe('AppShellComponent theme toggle', () => {
       imports: [AppShellComponent],
       providers: [
         provideRouter([]),
+        provideFakeAuth(fakeAuthService()),
         { provide: NotificationsApi, useValue: { list: () => of([]), markRead: () => of(), markAllRead: () => of() } }
       ]
     });
@@ -54,5 +56,57 @@ describe('AppShellComponent theme toggle', () => {
     fixture.detectChanges();
     expect(toggleButton(fixture).textContent?.trim()).toBe('☾');
     expect(document.documentElement.dataset['theme']).toBe('dark');
+  });
+});
+
+describe('AppShellComponent user menu', () => {
+  let auth: FakeAuthService;
+
+  function create(user = makeUser()) {
+    auth = fakeAuthService(user);
+    TestBed.configureTestingModule({
+      imports: [AppShellComponent],
+      providers: [
+        provideRouter([]),
+        provideFakeAuth(auth),
+        { provide: NotificationsApi, useValue: { list: () => of([]), markRead: () => of(), markAllRead: () => of() } }
+      ]
+    });
+    const fixture = TestBed.createComponent(AppShellComponent);
+    fixture.detectChanges();
+    return fixture;
+  }
+
+  function openMenu(fixture: ReturnType<typeof create>): HTMLElement {
+    const el: HTMLElement = fixture.nativeElement;
+    (el.querySelector('button[aria-haspopup="menu"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    return el.querySelector('#user-menu') as HTMLElement;
+  }
+
+  it('shows the signed-in user and an Account link, but no Admin link for normal users', () => {
+    const fixture = create();
+    const el: HTMLElement = fixture.nativeElement;
+    expect(el.querySelector('button[aria-haspopup="menu"]')?.textContent).toContain('AL');
+    const menu = openMenu(fixture);
+    expect(menu.querySelector('[data-testid="user-menu-name"]')?.textContent).toContain('Ada Lovelace');
+    expect(menu.querySelector('[data-testid="user-menu-email"]')?.textContent).toContain('ada@example.com');
+    expect(menu.querySelector('a[href="/account"]')).toBeTruthy();
+    expect(menu.querySelector('a[href="/admin/users"]')).toBeNull();
+  });
+
+  it('shows the Admin link for admins', () => {
+    const menu = openMenu(create(makeUser({ roles: ['User', 'Admin'] })));
+    expect(menu.querySelector('a[href="/admin/users"]')).toBeTruthy();
+  });
+
+  it('Sign out logs out, clears state and navigates to /login', () => {
+    const fixture = create();
+    const navigateByUrl = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+    const menu = openMenu(fixture);
+    (Array.from(menu.querySelectorAll('button')).find((b) => b.textContent?.includes('Sign out')) as HTMLButtonElement).click();
+    expect(auth.logout).toHaveBeenCalled();
+    expect(auth.currentUser()).toBeNull();
+    expect(navigateByUrl).toHaveBeenCalledWith('/login');
   });
 });

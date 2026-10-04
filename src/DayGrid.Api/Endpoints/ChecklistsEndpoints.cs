@@ -138,6 +138,7 @@ public static class ChecklistsEndpoints
             if (ToSortOrderMap(request) is not { } sortOrderById)
                 return Required("items", "Items are required.");
             var ids = sortOrderById.Keys.ToList();
+            // Tenant-filtered: ids of other users' checklists (or unknown ids) are ignored.
             var checklists = await db.Checklists.Where(c => ids.Contains(c.Id)).ToListAsync(ct);
 
             foreach (var checklist in checklists)
@@ -153,6 +154,8 @@ public static class ChecklistsEndpoints
 
         group.MapGet("/{id:guid}/items", async (AppDbContext db, Guid id, CancellationToken ct) =>
         {
+            if (!await db.Checklists.AnyAsync(c => c.Id == id, ct))
+                return Results.NotFound();
             var items = await db.ChecklistItems.AsNoTracking()
                 .Where(i => i.ChecklistId == id)
                 .OrderBy(i => i.SortOrder)
@@ -203,6 +206,9 @@ public static class ChecklistsEndpoints
         {
             if (ToSortOrderMap(request) is not { } sortOrderById)
                 return Required("items", "Items are required.");
+            if (!await db.Checklists.AnyAsync(c => c.Id == id, ct))
+                return Results.NotFound();
+            // Ids that are not this (own) checklist's items are ignored.
             var ids = sortOrderById.Keys.ToList();
             var items = await db.ChecklistItems.Where(i => i.ChecklistId == id && ids.Contains(i.Id)).ToListAsync(ct);
 
@@ -284,6 +290,8 @@ public static class ChecklistsEndpoints
 
         group.MapGet("/{itemId:guid}/history", async (AppDbContext db, Guid itemId, DateOnly from, DateOnly to, CancellationToken ct) =>
         {
+            if (!await db.ChecklistItems.AnyAsync(i => i.Id == itemId, ct))
+                return Results.NotFound();
             var completions = await db.ChecklistCompletions.AsNoTracking()
                 .Where(c => c.ChecklistItemId == itemId && c.OccurrenceDate >= from && c.OccurrenceDate <= to)
                 .OrderByDescending(c => c.OccurrenceDate)
@@ -345,6 +353,8 @@ public static class ChecklistsEndpoints
 
         group.MapDelete("/{itemId:guid}/complete", async (AppDbContext db, Guid itemId, DateOnly date, CancellationToken ct) =>
         {
+            if (!await db.ChecklistItems.AnyAsync(i => i.Id == itemId, ct))
+                return Results.NotFound();
             var completion = await db.ChecklistCompletions
                 .FirstOrDefaultAsync(c => c.ChecklistItemId == itemId && c.OccurrenceDate == date, ct);
             if (completion is null)

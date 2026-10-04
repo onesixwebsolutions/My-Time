@@ -3,6 +3,7 @@ using DayGrid.Domain.Enums;
 using DayGrid.Infrastructure.BackgroundServices;
 using DayGrid.Infrastructure.Data;
 using DayGrid.Infrastructure.Email;
+using DayGrid.Infrastructure.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -50,8 +51,11 @@ public class ReminderDispatcherServiceTests
 
         public RecordingEmailSender(Exception? toThrow = null) => _throw = toThrow;
 
+        public string? LastTo;
+
         public Task SendAsync(string toAddress, string subject, string htmlBody, CancellationToken ct = default)
         {
+            LastTo = toAddress;
             Interlocked.Increment(ref Calls);
             return _throw is null ? Task.CompletedTask : Task.FromException(_throw);
         }
@@ -95,13 +99,15 @@ public class ReminderDispatcherServiceTests
         }
     }
 
-    private static async Task<Reminder> SeedAsync(ServiceProvider provider, NotificationChannel channels, bool emailEnabled)
+    private static async Task<Reminder> SeedAsync(ServiceProvider provider, NotificationChannel channels, bool emailEnabled, bool emailConfirmed = true)
     {
         using var scope = provider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        db.AppSettings.Add(new AppSetting { Id = 1, EmailEnabled = emailEnabled, EmailTo = "me@example.com" });
-        var task = new FutureTask { Title = "Pay rent", DueDate = new DateOnly(2000, 1, 1), DueTime = new TimeOnly(9, 0) };
-        var reminder = new Reminder { FutureTaskId = task.Id, FireAtUtc = LongAgo, Channels = channels };
+        var user = new AppUser { Id = Guid.NewGuid(), UserName = "me@example.com", Email = "me@example.com", EmailConfirmed = emailConfirmed, DisplayName = "Me" };
+        db.Users.Add(user);
+        db.AppSettings.Add(new AppSetting { UserId = user.Id, EmailEnabled = emailEnabled, EmailTo = "someone-else@example.com" });
+        var task = new FutureTask { UserId = user.Id, Title = "Pay rent", DueDate = new DateOnly(2000, 1, 1), DueTime = new TimeOnly(9, 0) };
+        var reminder = new Reminder { UserId = user.Id, FutureTaskId = task.Id, FireAtUtc = LongAgo, Channels = channels };
         db.FutureTasks.Add(task);
         db.Reminders.Add(reminder);
         await db.SaveChangesAsync();
@@ -128,6 +134,7 @@ public class ReminderDispatcherServiceTests
         Assert.Equal(1, saved.AttemptCount);
         Assert.NotNull(saved.SentAtUtc);
         var log = await db.NotificationLogs.SingleAsync();
+        Assert.Equal(saved.UserId, log.UserId); // stamped with the reminder's owner
         Assert.Equal("Pay rent", log.Title);
         Assert.Equal("Due 2000-01-01 at 09:00", log.Body);
         Assert.Equal(NotificationChannel.InApp, log.Channel);
@@ -150,6 +157,7 @@ public class ReminderDispatcherServiceTests
         Assert.Equal(ReminderStatus.Failed, saved.Status);
         Assert.Equal(1, saved.AttemptCount);
         Assert.Equal(1, sender.Calls); // no retry/backoff for a send that can never succeed
+        Assert.Equal("me@example.com", sender.LastTo); // the account address, not settings.EmailTo
 
         var logs = await db.NotificationLogs.ToListAsync();
         Assert.Contains(logs, l => l.Channel == NotificationChannel.InApp && l.Error == null);
@@ -170,5 +178,44 @@ public class ReminderDispatcherServiceTests
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.Equal(ReminderStatus.Sent, (await db.Reminders.SingleAsync()).Status);
         Assert.Equal(0, sender.Calls);
+    }
+
+    [Fact]
+    public async Task EmailChannel_WhenAccountEmailUnconfirmed_SkipsSend()
+    {
+        var sender = new RecordingEmailSender();
+        var (provider, _) = BuildServices(sender);
+        await using var _ = provider;
+        var reminder = await SeedAsync(provider, NotificationChannel.Email, emailEnabled: true, emailConfirmed: false);
+
+        await RunOneTickAsync(provider, db => NotScheduled(db, reminder.Id));
+
+        Assert.Equal(0, sender.Calls);
+    }
+
+    [Fact]
+    public async Task LegacyReminderWithoutOwner_IsLeftScheduled()
+    {
+        var sender = new RecordingEmailSender();
+        var (provider, _) = BuildServices(sender);
+        await using var _ = provider;
+        Guid legacyId, ownedId;
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var legacyTask = new FutureTask { Title = "Legacy", DueDate = new DateOnly(2000, 1, 1) };
+            var legacy = new Reminder { FutureTaskId = legacyTask.Id, FireAtUtc = LongAgo };
+            db.AddRange(legacyTask, legacy);
+            await db.SaveChangesAsync();
+            legacyId = legacy.Id;
+        }
+        ownedId = (await SeedAsync(provider, NotificationChannel.InApp, emailEnabled: false)).Id;
+
+        await RunOneTickAsync(provider, db => NotScheduled(db, ownedId));
+
+        using var check = provider.CreateScope();
+        var reminders = check.ServiceProvider.GetRequiredService<AppDbContext>().Reminders.AsNoTracking();
+        Assert.Equal(ReminderStatus.Scheduled, (await reminders.SingleAsync(r => r.Id == legacyId)).Status);
+        Assert.Equal(ReminderStatus.Sent, (await reminders.SingleAsync(r => r.Id == ownedId)).Status);
     }
 }

@@ -29,14 +29,6 @@
   </ItemGroup>
 
   <!--
-    Schema for the embedded-Postgres first-run bootstrap (see EmbeddedDatabase.cs) — needs to
-    ship next to the exe since a published app has no access to the source tree's db/ folder.
-  -->
-  <ItemGroup>
-    <None Include="..\..\db\init.sql" Link="db\init.sql" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <!--
     Single-executable publishing: `dotnet publish` on this project alone produces a fully
     self-contained deployment that serves the Angular SPA and the API from one process/one port
     (see UseStaticFiles/MapFallbackToFile in Program.cs). These two targets do the Angular half

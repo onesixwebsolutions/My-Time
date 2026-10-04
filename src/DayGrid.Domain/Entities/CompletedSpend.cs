@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace DayGrid.Domain.Entities;
 
 /// <summary>
@@ -7,9 +9,13 @@ namespace DayGrid.Domain.Entities;
 /// own list + its own "My Spends Completed This Month" total, separate from the
 /// constant/varying totals.
 /// </summary>
-public class CompletedSpend
+public class CompletedSpend : IUserOwned
 {
     public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>Owning account. Null only for legacy rows not yet claimed by the first registered user.</summary>
+    [JsonIgnore]
+    public Guid? UserId { get; set; }
 
     public string Title { get; set; } = string.Empty;
     public decimal Amount { get; set; }
