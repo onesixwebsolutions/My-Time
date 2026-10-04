@@ -32,7 +32,6 @@ interface DraftReminder {
 // date, and manage its reminders — mirrors FutureTasksEndpoints.cs.
 @Component({
   selector: 'app-upcoming-page',
-  standalone: true,
   imports: [FormsModule, FutureTaskFieldsComponent],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

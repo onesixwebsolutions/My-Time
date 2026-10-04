@@ -13,7 +13,6 @@ function toApiTime(value: string): string {
 // /timetable/:id.
 @Component({
   selector: 'app-timetable-page',
-  standalone: true,
   imports: [FormsModule, RouterLink],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

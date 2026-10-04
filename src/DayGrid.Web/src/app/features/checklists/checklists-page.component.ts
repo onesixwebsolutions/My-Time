@@ -11,7 +11,6 @@ const DEFAULT_COLOR = '#6366f1';
 // page at /checklists/:id.
 @Component({
   selector: 'app-checklists-page',
-  standalone: true,
   imports: [FormsModule, RouterLink],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

@@ -19,7 +19,6 @@ type State = 'password' | 'success' | 'failed';
  */
 @Component({
   selector: 'app-confirm-email-page',
-  standalone: true,
   imports: [ReactiveFormsModule, RouterLink, PasswordInputComponent],
   template: `
     @switch (state()) {

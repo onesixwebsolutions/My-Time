@@ -43,7 +43,6 @@ function toApiTime(value: string): string | null {
 // editor stays the tool for tasks that need advance-warning reminders.
 @Component({
   selector: 'app-calendar-page',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

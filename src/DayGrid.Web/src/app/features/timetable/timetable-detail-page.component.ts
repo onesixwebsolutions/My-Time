@@ -25,7 +25,6 @@ function toApiTime(value: string): string {
 // Full CRUD for one timetable template's header + its blocks.
 @Component({
   selector: 'app-timetable-detail-page',
-  standalone: true,
   imports: [FormsModule, RouterLink, TimetableBlockFormComponent],
   template: `
     @if (data(); as d) {

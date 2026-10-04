@@ -1,5 +1,4 @@
-import { APP_INITIALIZER, ApplicationConfig, inject } from '@angular/core';
-import { provideAnimations } from '@angular/platform-browser/animations';
+import { ApplicationConfig, inject, provideAppInitializer, provideZoneChangeDetection } from '@angular/core';
 import { provideHttpClient, withFetch, withInterceptors, withXsrfConfiguration } from '@angular/common/http';
 import { provideRouter } from '@angular/router';
 
@@ -12,13 +11,14 @@ import { AuthService } from './core/auth/auth.service';
  * guards can decide synchronously. The call also makes the server issue the XSRF-TOKEN cookie.
  * loadCurrentUser() never rejects — a 401 just means "signed out".
  */
-export function initAuth(): () => Promise<unknown> {
-  const auth = inject(AuthService);
-  return () => auth.loadCurrentUser();
+export function initAuth(): Promise<unknown> {
+  return inject(AuthService).loadCurrentUser();
 }
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    // Angular 21+ defaults to zoneless; DayGrid keeps zone.js-based change detection.
+    provideZoneChangeDetection(),
     provideRouter(routes),
     provideHttpClient(
       withFetch(),
@@ -26,7 +26,6 @@ export const appConfig: ApplicationConfig = {
       // Angular's XSRF interceptor only touches unsafe methods on relative URLs — all API URLs are relative.
       withXsrfConfiguration({ cookieName: XSRF_COOKIE_NAME, headerName: XSRF_HEADER_NAME })
     ),
-    provideAnimations(),
-    { provide: APP_INITIALIZER, multi: true, useFactory: initAuth }
+    provideAppInitializer(initAuth)
   ]
 };

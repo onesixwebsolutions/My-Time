@@ -11,7 +11,6 @@ import { UI } from '../../shared/forms/ui-classes';
 
 @Component({
   selector: 'app-register-page',
-  standalone: true,
   imports: [ReactiveFormsModule, RouterLink, PasswordInputComponent],
   template: `
     <h1 class="text-[20px] font-bold tracking-tight text-text">Create your account</h1>

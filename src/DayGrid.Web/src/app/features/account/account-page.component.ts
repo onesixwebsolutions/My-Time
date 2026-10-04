@@ -62,7 +62,6 @@ export const LAST_ADMIN_MESSAGE =
 
 @Component({
   selector: 'app-account-page',
-  standalone: true,
   imports: [ReactiveFormsModule, PasswordInputComponent],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

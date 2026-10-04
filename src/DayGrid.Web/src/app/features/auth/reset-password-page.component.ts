@@ -13,7 +13,6 @@ import { UI } from '../../shared/forms/ui-classes';
  * The token is removed from the address bar as soon as it has been read. */
 @Component({
   selector: 'app-reset-password-page',
-  standalone: true,
   imports: [ReactiveFormsModule, RouterLink, PasswordInputComponent],
   template: `
     <h1 class="text-[20px] font-bold tracking-tight text-text">Choose a new password</h1>

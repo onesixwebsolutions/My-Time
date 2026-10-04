@@ -26,7 +26,6 @@ const PRIORITY_LABEL: Record<string, string> = {
 
 @Component({
   selector: 'app-task-row',
-  standalone: true,
   imports: [FormsModule],
   template: `
     @if (editing) {

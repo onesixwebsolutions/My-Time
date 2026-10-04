@@ -15,7 +15,6 @@ import { TaskRowComponent } from './task-row.component';
 // actually looking at it.
 @Component({
   selector: 'app-tasks-page',
-  standalone: true,
   imports: [FormsModule, TaskRowComponent, EmptyStateComponent],
   providers: [TasksStore],
   template: `

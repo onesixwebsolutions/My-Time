@@ -16,7 +16,6 @@ const DAYS: DayOfWeekName[] = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thur
 // is delete-and-recreate) for which template applies on which day.
 @Component({
   selector: 'app-assignments-page',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

@@ -33,7 +33,6 @@ function formatMoney(n: number): string {
 // total is meaningfully comparable to (and combinable with) the constant-expenses total.
 @Component({
   selector: 'app-expenses-page',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <div class="mb-5 flex flex-wrap items-center gap-3">

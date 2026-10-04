@@ -41,7 +41,6 @@ function toDateInput(value: string | null): string {
 // UpdateChecklistItemRequest field-for-field.
 @Component({
   selector: 'app-checklist-item-form',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <form class="space-y-3" (submit)="save($event)">

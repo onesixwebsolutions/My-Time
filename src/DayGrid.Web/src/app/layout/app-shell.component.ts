@@ -38,7 +38,6 @@ function initialTheme(): Theme {
 
 @Component({
   selector: 'app-shell',
-  standalone: true,
   imports: [RouterLink, RouterLinkActive, RouterOutlet],
   template: `
     <div class="grid min-h-screen grid-cols-1 md:grid-cols-[232px_1fr]">

@@ -10,7 +10,6 @@ export const RESEND_COOLDOWN_SECONDS = 60;
 /** Shown after registration (202). Lets the user re-send the verification email, with a cooldown. */
 @Component({
   selector: 'app-check-email-page',
-  standalone: true,
   imports: [RouterLink],
   template: `
     <h1 class="text-[20px] font-bold tracking-tight text-text">Check your email</h1>

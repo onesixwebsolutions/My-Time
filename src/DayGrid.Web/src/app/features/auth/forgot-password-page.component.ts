@@ -10,7 +10,6 @@ import { UI } from '../../shared/forms/ui-classes';
 /** Always shows the same confirmation, whether or not the email has an account (no enumeration). */
 @Component({
   selector: 'app-forgot-password-page',
-  standalone: true,
   imports: [ReactiveFormsModule, RouterLink],
   template: `
     <h1 class="text-[20px] font-bold tracking-tight text-text">Reset your password</h1>

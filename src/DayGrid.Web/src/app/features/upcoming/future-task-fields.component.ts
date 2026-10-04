@@ -8,7 +8,6 @@ import { TaskPriorityName } from '../../core/api/future-tasks.api';
 // stay visually and behaviorally identical without duplicating markup.
 @Component({
   selector: 'app-future-task-fields',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <div class="grid grid-cols-[1fr_110px] gap-2.5">

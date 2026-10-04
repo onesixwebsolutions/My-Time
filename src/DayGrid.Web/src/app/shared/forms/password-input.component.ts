@@ -7,7 +7,6 @@ import { passwordStrength } from './form-errors';
 /** Password field with an accessible show/hide toggle and an optional strength hint. */
 @Component({
   selector: 'app-password-input',
-  standalone: true,
   imports: [ReactiveFormsModule],
   template: `
     <label [for]="inputId()" [class]="ui.label">{{ label() }}</label>

@@ -4,7 +4,7 @@ import { CanActivateFn, Router, UrlTree } from '@angular/router';
 import { AuthService } from './auth.service';
 import { sanitizeReturnUrl } from './return-url';
 
-// The user is resolved by APP_INITIALIZER (GET /auth/me) before the first navigation, so the
+// The user is resolved by the app initializer (GET /auth/me) before the first navigation, so the
 // guards can read the signal synchronously.
 
 function loginRedirect(router: Router, url: string): UrlTree {

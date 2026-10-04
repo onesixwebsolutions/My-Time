@@ -1,16 +1,16 @@
-// Karma configuration (Angular 18 CLI defaults + a CI-friendly headless launcher).
+// Karma configuration (Angular CLI defaults + a CI-friendly headless launcher). The @angular/build:karma
+// builder registers its own Karma plugin, so it is not listed here.
 // CI: `npm run test:ci` uses ChromeHeadlessCI (--no-sandbox is required in most containers).
 // Set CHROME_BIN to point at any Chromium-based browser if Chrome is not on the default path.
 module.exports = function (config) {
   config.set({
     basePath: '',
-    frameworks: ['jasmine', '@angular-devkit/build-angular'],
+    frameworks: ['jasmine'],
     plugins: [
       require('karma-jasmine'),
       require('karma-chrome-launcher'),
       require('karma-jasmine-html-reporter'),
-      require('karma-coverage'),
-      require('@angular-devkit/build-angular/plugins/karma')
+      require('karma-coverage')
     ],
     client: {
       jasmine: {

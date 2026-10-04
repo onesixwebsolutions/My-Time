@@ -5,7 +5,6 @@ import { Component } from '@angular/core';
 // (Polish & extras) rather than the route table's "(Phase 5)" label.
 @Component({
   selector: 'app-insights-page',
-  standalone: true,
   template: `
     <div class="mb-5">
       <h1 class="text-[22px] font-bold tracking-tight text-text">Insights</h1>

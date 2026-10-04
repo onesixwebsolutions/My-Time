@@ -5,7 +5,6 @@ import { Component, EventEmitter, Input, Output } from '@angular/core';
 // to be reused by Checklists/Upcoming/Timetable once those get real lists.
 @Component({
   selector: 'app-empty-state',
-  standalone: true,
   template: `
     <div class="flex flex-col items-center gap-3 px-6 py-12 text-center">
       <div class="grid h-12 w-12 place-items-center rounded-full bg-raised2 text-2xl">✓</div>

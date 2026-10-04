@@ -43,7 +43,7 @@ export class AuthService {
     );
   }
 
-  /** APP_INITIALIZER entry point. */
+  /** App initializer entry point (provideAppInitializer). */
   loadCurrentUser(): Promise<UserDto | null> {
     return firstValueFrom(this.refreshCurrentUser());
   }

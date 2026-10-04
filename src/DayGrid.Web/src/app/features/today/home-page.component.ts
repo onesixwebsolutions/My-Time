@@ -41,7 +41,6 @@ export function withItemCompleted(day: TodayDto, itemId: string, completed: bool
 // boundary itself only changes on refetch/SignalR (Phase 5 wires the latter).
 @Component({
   selector: 'app-home-page',
-  standalone: true,
   template: `
     @if (loading()) {
       <div class="py-16 text-center text-[13px] text-muted">Loading today…</div>

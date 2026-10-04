@@ -18,7 +18,6 @@ export const LOGIN_MESSAGES = {
 
 @Component({
   selector: 'app-login-page',
-  standalone: true,
   imports: [ReactiveFormsModule, RouterLink, PasswordInputComponent],
   template: `
     <h1 class="text-[20px] font-bold tracking-tight text-text">Sign in</h1>

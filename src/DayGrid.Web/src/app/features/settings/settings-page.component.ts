@@ -7,7 +7,6 @@ import { AuthService } from '../../core/auth/auth.service';
 // Phase 6 / Phase 7 (plan section 7). Renders the real app_settings row today.
 @Component({
   selector: 'app-settings-page',
-  standalone: true,
   template: `
     <div class="mb-5">
       <h1 class="text-[22px] font-bold tracking-tight text-text">Settings</h1>

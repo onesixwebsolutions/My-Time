@@ -46,7 +46,6 @@ function recurrenceSummary(item: ChecklistItem): string {
 // the reusable app-checklist-item-form (anchor + recurrence editor).
 @Component({
   selector: 'app-checklist-detail-page',
-  standalone: true,
   imports: [FormsModule, RouterLink, ChecklistItemFormComponent],
   template: `
     @if (checklist(); as cl) {

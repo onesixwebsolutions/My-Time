@@ -5,7 +5,6 @@ import { RouterOutlet } from '@angular/router';
 // pages render in AuthLayoutComponent, signed-in pages in AppShellComponent (sidebar/topbar).
 @Component({
   selector: 'app-root',
-  standalone: true,
   imports: [RouterOutlet],
   template: `<router-outlet></router-outlet>`
 })

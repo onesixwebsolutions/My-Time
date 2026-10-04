@@ -17,7 +17,6 @@ function toApiTime(value: string): string {
 // color, location, checklist link, overlap/notify flags, sort order).
 @Component({
   selector: 'app-timetable-block-form',
-  standalone: true,
   imports: [FormsModule],
   template: `
     <form class="space-y-3" (submit)="save($event)">

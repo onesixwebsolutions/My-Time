@@ -25,7 +25,6 @@ export const ADMIN_ERROR_MESSAGES: Record<string, string> = {
 /** Account management for admins: search, page, lock/unlock, resend confirmation, delete. */
 @Component({
   selector: 'app-admin-users-page',
-  standalone: true,
   imports: [FormsModule, DatePipe],
   template: `
     <div class="mb-5 flex flex-wrap items-end gap-3">

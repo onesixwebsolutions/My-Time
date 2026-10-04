@@ -4,7 +4,6 @@ import { RouterOutlet } from '@angular/router';
 /** Minimal centered layout (no sidebar) for the public auth pages. */
 @Component({
   selector: 'app-auth-layout',
-  standalone: true,
   imports: [RouterOutlet],
   template: `
     <main class="flex min-h-screen flex-col items-center justify-center px-4 py-10">
