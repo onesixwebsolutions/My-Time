@@ -26,7 +26,7 @@ public static class TasksEndpoints
                 query = query.Where(t => t.Status == s);
 
             if (!string.IsNullOrWhiteSpace(q))
-                query = query.Where(t => EF.Functions.ILike(t.Title, $"%{q}%"));
+                query = query.Where(t => EF.Functions.ILike(t.Title, SearchPattern.Contains(q), SearchPattern.Escape));
 
             query = sort switch
             {

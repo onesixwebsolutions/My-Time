@@ -26,3 +26,10 @@ Thumbs.db
 *.local.json
 appsettings.*.local.json
 .claude/scheduled_tasks.lock
+
+## Playwright e2e (src/DayGrid.Web/e2e)
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+e2e/.auth/

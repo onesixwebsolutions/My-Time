@@ -37,7 +37,7 @@ public static class FutureTasksEndpoints
             if (status is { } s) query = query.Where(t => t.Status == s);
             if (from is { } f) query = query.Where(t => t.DueDate >= f);
             if (to is { } toDate) query = query.Where(t => t.DueDate <= toDate);
-            if (!string.IsNullOrWhiteSpace(q)) query = query.Where(t => EF.Functions.ILike(t.Title, $"%{q}%"));
+            if (!string.IsNullOrWhiteSpace(q)) query = query.Where(t => EF.Functions.ILike(t.Title, SearchPattern.Contains(q), SearchPattern.Escape));
 
             var tasks = await query.OrderBy(t => t.DueDate).ThenBy(t => t.DueTime).ToListAsync(ct);
             return Results.Ok(tasks.Select(ToDto));
@@ -74,6 +74,10 @@ public static class FutureTasksEndpoints
         {
             if (string.IsNullOrWhiteSpace(request.Title))
                 return TitleRequired();
+            if (await ChecklistMissingAsync(db, request.PromoteToChecklistId, ct))
+                return ChecklistNotFound();
+            if (HasInvalidOffset(request.Reminders))
+                return InvalidOffset();
 
             var task = new FutureTask
             {
@@ -103,6 +107,10 @@ public static class FutureTasksEndpoints
 
             var task = await db.FutureTasks.FindAsync([id], ct);
             if (task is null) return Results.NotFound();
+            if (await ChecklistMissingAsync(db, request.PromoteToChecklistId, ct))
+                return ChecklistNotFound();
+            if (HasInvalidOffset(request.Reminders))
+                return InvalidOffset();
 
             task.Title = request.Title.Trim();
             task.Notes = request.Notes;
@@ -177,6 +185,10 @@ public static class FutureTasksEndpoints
 
         group.MapPatch("/{id:guid}/defer", async (AppDbContext db, IAppClock clock, Guid id, DeferFutureTaskRequest request, CancellationToken ct) =>
         {
+            // A body without newDueDate binds to default(DateOnly) and silently deferred to 0001-01-01.
+            if (request.NewDueDate == default)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["newDueDate"] = ["New due date is required."] });
+
             var task = await db.FutureTasks.FindAsync([id], ct);
             if (task is null) return Results.NotFound();
 
@@ -207,6 +219,8 @@ public static class FutureTasksEndpoints
         {
             var task = await db.FutureTasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id, ct);
             if (task is null) return Results.NotFound();
+            if (HasInvalidOffset([request]))
+                return InvalidOffset();
 
             var reminder = BuildReminder(task, request, clock.TimeZone);
             db.Reminders.Add(reminder);
@@ -333,6 +347,24 @@ public static class FutureTasksEndpoints
 
     private static IResult TitleRequired() =>
         Results.ValidationProblem(new Dictionary<string, string[]> { ["title"] = ["Title is required."] });
+
+    // promote_to_checklist_id is a real FK — an unknown id used to fail the INSERT/UPDATE (500).
+    private static async Task<bool> ChecklistMissingAsync(AppDbContext db, Guid? checklistId, CancellationToken ct) =>
+        checklistId is { } id && !await db.Checklists.AnyAsync(c => c.Id == id, ct);
+
+    private static IResult ChecklistNotFound() =>
+        Results.ValidationProblem(new Dictionary<string, string[]> { ["promoteToChecklistId"] = ["Checklist not found."] });
+
+    private const int MaxReminderOffsetMinutes = 366 * 24 * 60;
+
+    private static bool HasInvalidOffset(IEnumerable<CreateReminderRequest>? reminders) =>
+        reminders is not null && reminders.Any(r => r is null || r.OffsetMinutes is < 0 or > MaxReminderOffsetMinutes);
+
+    private static IResult InvalidOffset() =>
+        Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["offsetMinutes"] = [$"Reminder offset must be between 0 and {MaxReminderOffsetMinutes} minutes."]
+        });
 
     private static Reminder BuildReminder(FutureTask task, CreateReminderRequest request, TimeZoneInfo timeZone)
     {

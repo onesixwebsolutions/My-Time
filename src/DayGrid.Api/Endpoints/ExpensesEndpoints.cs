@@ -25,6 +25,11 @@ public static class ExpensesEndpoints
         return app;
     }
 
+    // amount is numeric(12,2): Postgres rounds extra decimals half away from zero on write, so
+    // round the same way up front — otherwise the create/update response (12.345) disagreed with
+    // every later read (12.35).
+    private static decimal ToMoney(decimal amount) => Math.Round(amount, 2, MidpointRounding.AwayFromZero);
+
     private static void MapConstantExpenses(IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v1/expenses/constant").WithTags("Expenses");
@@ -59,7 +64,7 @@ public static class ExpensesEndpoints
             var expense = new ConstantExpense
             {
                 Name = request.Name.Trim(),
-                Amount = request.Amount,
+                Amount = ToMoney(request.Amount),
                 Category = request.Category?.Trim(),
                 DayOfMonth = request.DayOfMonth,
                 Notes = request.Notes
@@ -83,7 +88,7 @@ public static class ExpensesEndpoints
             if (expense is null) return Results.NotFound();
 
             expense.Name = request.Name.Trim();
-            expense.Amount = request.Amount;
+            expense.Amount = ToMoney(request.Amount);
             expense.Category = request.Category?.Trim();
             expense.DayOfMonth = request.DayOfMonth;
             expense.Notes = request.Notes;
@@ -151,7 +156,7 @@ public static class ExpensesEndpoints
             var expense = new VaryingExpense
             {
                 Title = request.Title.Trim(),
-                Amount = request.Amount,
+                Amount = ToMoney(request.Amount),
                 Category = request.Category?.Trim(),
                 Date = request.Date,
                 Notes = request.Notes
@@ -173,7 +178,7 @@ public static class ExpensesEndpoints
             if (expense is null) return Results.NotFound();
 
             expense.Title = request.Title.Trim();
-            expense.Amount = request.Amount;
+            expense.Amount = ToMoney(request.Amount);
             expense.Category = request.Category?.Trim();
             expense.Date = request.Date;
             expense.Notes = request.Notes;
@@ -229,7 +234,7 @@ public static class ExpensesEndpoints
             var spend = new CompletedSpend
             {
                 Title = request.Title.Trim(),
-                Amount = request.Amount,
+                Amount = ToMoney(request.Amount),
                 Category = request.Category?.Trim(),
                 Date = request.Date,
                 Notes = request.Notes
@@ -251,7 +256,7 @@ public static class ExpensesEndpoints
             if (spend is null) return Results.NotFound();
 
             spend.Title = request.Title.Trim();
-            spend.Amount = request.Amount;
+            spend.Amount = ToMoney(request.Amount);
             spend.Category = request.Category?.Trim();
             spend.Date = request.Date;
             spend.Notes = request.Notes;

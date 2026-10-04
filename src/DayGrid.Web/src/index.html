@@ -10,6 +10,13 @@
   <link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png" />
   <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#f1f5f9" media="(prefers-color-scheme: light)" />
+  <!-- Apply the remembered theme toggle before first paint (key: AppShellComponent's THEME_STORAGE_KEY). -->
+  <script>
+    try {
+      var t = localStorage.getItem('daygrid-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <app-root></app-root>

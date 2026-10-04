@@ -35,6 +35,19 @@ public static class EmbeddedDatabase
     // means every run resolves to the exact same data directory: dbDir/pg_embed/{InstanceId}/data.
     private static readonly Guid InstanceId = Guid.Parse("6d3f2f8a-6c1a-4a2b-9e3a-1a2b3c4d5e6f");
 
+    /// <summary>
+    /// postgres.exe's stderr is inherited from pg_ctl, which PgServer starts with redirected
+    /// stdout/stderr pipes that it never reads. Postgres logs every ERROR and checkpoint there, so
+    /// once that pipe's buffer filled the next backend to log blocked forever while holding its
+    /// locks, freezing the whole database (reproduced by the integration tests after a few hundred
+    /// constraint violations; a long-running desktop session would hit it via checkpoint logs).
+    /// The logging collector moves server logging to files under the data directory's log/ folder.
+    /// </summary>
+    public static Dictionary<string, string> ServerParameters() => new()
+    {
+        ["logging_collector"] = "on"
+    };
+
     public static async Task<(PgServer Server, string ConnectionString)> StartAsync(string dataDir, string schemaSqlPath)
     {
         var actualDataDir = Path.Combine(dataDir, "pg_embed", InstanceId.ToString(), "data");
@@ -48,6 +61,7 @@ public static class EmbeddedDatabase
             PgVersion,
             dbDir: dataDir,
             instanceId: InstanceId,
+            pgServerParams: ServerParameters(),
             clearInstanceDirOnStop: false,
             clearWorkingDirOnStart: false);
 
@@ -55,6 +69,8 @@ public static class EmbeddedDatabase
 
         var adminConnectionString = BuildConnectionString(server.PgPort, "postgres");
         var appConnectionString = BuildConnectionString(server.PgPort, DatabaseName);
+
+        await WaitUntilAcceptingConnectionsAsync(adminConnectionString);
 
         if (isFirstRun)
         {
@@ -71,6 +87,27 @@ public static class EmbeddedDatabase
         }
 
         return (server, appConnectionString);
+    }
+
+    // PgServer.StartAsync can return while Postgres is still in crash recovery (e.g. after an
+    // unclean stop), when connections are rejected with 57P03 "the database system is starting up".
+    private static async Task WaitUntilAcceptingConnectionsAsync(string connectionString)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (true)
+        {
+            try
+            {
+                await using var connection = new NpgsqlConnection(connectionString + ";Pooling=false");
+                await connection.OpenAsync();
+                return;
+            }
+            catch (Exception ex) when (DateTime.UtcNow < deadline &&
+                ex is PostgresException { SqlState: "57P03" } or NpgsqlException { IsTransient: true })
+            {
+                await Task.Delay(250);
+            }
+        }
     }
 
     private static string BuildConnectionString(int port, string database) =>

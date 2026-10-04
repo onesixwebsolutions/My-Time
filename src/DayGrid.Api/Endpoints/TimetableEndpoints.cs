@@ -340,7 +340,10 @@ public static class TimetableEndpoints
                 if (dayOverride.Mode is DayOverrideMode.RestDay or DayOverrideMode.CustomOnly)
                     return Results.Ok(new { templateId = (Guid?)null, reason = $"day_override:{dayOverride.Mode}" });
 
-                if (dayOverride.TemplateId is { } overrideTemplateId)
+                // Same rule as DayPlanBuilder: an override pointing at a template that no longer
+                // exists falls through to normal resolution instead of returning a dead id.
+                if (dayOverride.TemplateId is { } overrideTemplateId
+                    && await db.TimetableTemplates.AnyAsync(t => t.Id == overrideTemplateId, ct))
                     return Results.Ok(new { templateId = overrideTemplateId, reason = "day_override:UseTemplate" });
             }
 

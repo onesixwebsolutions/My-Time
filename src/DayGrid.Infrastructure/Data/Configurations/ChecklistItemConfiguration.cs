@@ -54,6 +54,14 @@ public class ChecklistItemConfiguration : IEntityTypeConfiguration<ChecklistItem
         builder.HasIndex(x => new { x.AnchorType, x.AnchorTime });
         builder.HasIndex(x => x.Recurrence).HasMethod("gin");
 
+        // Mirrors init.sql's fk_checklist_items_timetable_block. Without it EF can't order an
+        // insert of a block and an item linked to it in one SaveChanges (the item went first and
+        // hit the FK), nor fix up tracked items when the database nulls the link on block delete.
+        builder.HasOne<TimetableBlock>()
+            .WithMany()
+            .HasForeignKey(x => x.TimetableBlockId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         builder.HasMany(x => x.Completions)
             .WithOne(x => x.ChecklistItem)
             .HasForeignKey(x => x.ChecklistItemId)

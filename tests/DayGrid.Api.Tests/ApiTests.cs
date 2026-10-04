@@ -25,6 +25,18 @@ public class HealthTests : ApiTestBase
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
+
+    [Theory]
+    [InlineData("GET", "/api/v1/does-not-exist")]
+    [InlineData("POST", "/api/v1/nope/123")]
+    [InlineData("GET", "/api")]
+    public async Task UnknownApiRoute_Returns404_NotTheSpaFallback(string method, string url)
+    {
+        var response = await Client.SendAsync(new HttpRequestMessage(new HttpMethod(method), url));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.NotEqual("text/html", response.Content.Headers.ContentType?.MediaType);
+    }
 }
 
 public class TasksEndpointTests : ApiTestBase

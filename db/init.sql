@@ -39,7 +39,7 @@ CREATE TABLE checklist_items (
     window_start             time NULL,
     window_end               time NULL,
     timetable_block_id       uuid NULL,                     -- FK added below, after timetable_blocks exists
-    recurrence               jsonb NOT NULL DEFAULT '{"type":"None"}',
+    recurrence               jsonb NOT NULL DEFAULT '{"type":0}',  -- enums stored as numbers, like the app writes them
     due_date                 date NULL,
     reminder_offset_minutes  int NULL,
     is_active                bool NOT NULL DEFAULT true,

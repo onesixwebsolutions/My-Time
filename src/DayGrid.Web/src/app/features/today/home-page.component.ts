@@ -5,6 +5,35 @@ import { ChecklistsApi } from '../../core/api/checklists.api';
 import { TodayApi, TodayDto } from '../../core/api/today.api';
 import { ClockService } from '../../core/time/clock.service';
 
+/**
+ * Returns `day` with one checklist item's completion flipped to `completed`, keeping every
+ * derived figure the page shows in step with it: the group's done/total badge, the summary
+ * tiles (same integer percent as DayPlanBuilder) and the linked-item chips on the timeline.
+ */
+export function withItemCompleted(day: TodayDto, itemId: string, completed: boolean): TodayDto {
+  const checklists = day.checklists.map((group) => {
+    if (!group.items.some((i) => i.itemId === itemId)) return group;
+    const items = group.items.map((i) => (i.itemId === itemId ? { ...i, isCompleted: completed } : i));
+    return { ...group, items, completedCount: items.filter((i) => i.isCompleted).length };
+  });
+  const totalItems = checklists.reduce((sum, g) => sum + g.totalCount, 0);
+  const completedItems = checklists.reduce((sum, g) => sum + g.completedCount, 0);
+  return {
+    ...day,
+    checklists,
+    blocks: day.blocks.map((b) =>
+      b.linkedItems.some((li) => li.itemId === itemId)
+        ? { ...b, linkedItems: b.linkedItems.map((li) => (li.itemId === itemId ? { ...li, isCompleted: completed } : li)) }
+        : b
+    ),
+    summary: {
+      ...day.summary,
+      completedItems,
+      completionPercent: totalItems > 0 ? Math.floor((completedItems * 100) / totalItems) : 0
+    }
+  };
+}
+
 // "What should I be doing right now?" — plan section 6.3. One GET /api/v1/today
 // call renders the whole page: now-card, timeline rail, checklist column, due
 // today panel. The now-card's elapsed/remaining figures are recomputed locally
@@ -53,7 +82,7 @@ import { ClockService } from '../../core/time/clock.service';
           <div class="flex flex-wrap items-end justify-between gap-5">
             <div>
               <h2 class="text-[27px] font-bold leading-tight tracking-tight">{{ now.title }}</h2>
-              <div class="mt-1 text-[12.5px] opacity-80">{{ now.category }} · {{ now.startTime }}–{{ now.endTime }}</div>
+              <div class="mt-1 text-[12.5px] opacity-80">{{ now.category }} · {{ hm(now.startTime) }}–{{ hm(now.endTime) }}</div>
             </div>
             <div class="text-right">
               <b class="tnum block text-[23px] font-bold tracking-tight">{{ remainingLabel() }}</b>
@@ -64,13 +93,13 @@ import { ClockService } from '../../core/time/clock.service';
             <div class="h-full rounded-full bg-white" [style.width.%]="liveProgressPercent()"></div>
           </div>
           <div class="mt-2 flex justify-between text-[11.5px] font-semibold opacity-85">
-            <span class="tnum">{{ now.startTime }}</span>
+            <span class="tnum">{{ hm(now.startTime) }}</span>
             <span>{{ liveProgressPercent() }}% elapsed</span>
-            <span class="tnum">{{ now.endTime }}</span>
+            <span class="tnum">{{ hm(now.endTime) }}</span>
           </div>
           @if (day.nextBlock; as next) {
             <div class="mt-3.5 flex items-center gap-2 border-t border-white/20 pt-3 text-[12.5px] opacity-90">
-              Next at <b class="tnum">{{ next.startTime }}</b> · {{ next.title }}
+              Next at <b class="tnum">{{ hm(next.startTime) }}</b> · {{ next.title }}
             </div>
           }
         </div>
@@ -123,7 +152,7 @@ import { ClockService } from '../../core/time/clock.service';
               >
                 <b class="block text-[13px] font-semibold">{{ block.title }}</b>
                 <span class="mt-0.5 block text-[11px] text-muted">
-                  {{ block.startTime }} – {{ block.endTime }}{{ block.location ? ' · ' + block.location : '' }}
+                  {{ hm(block.startTime) }} – {{ hm(block.endTime) }}{{ block.location ? ' · ' + block.location : '' }}
                 </span>
                 @if (block.linkedItems.length) {
                   <div class="mt-1.5 flex flex-wrap gap-1.5">
@@ -188,7 +217,7 @@ import { ClockService } from '../../core/time/clock.service';
                       >
                       <div class="mt-1 flex flex-wrap items-center gap-2">
                         @if (item.anchorTime) {
-                          <span class="text-[10.5px] font-medium text-muted">{{ item.anchorTime }}</span>
+                          <span class="text-[10.5px] font-medium text-muted">{{ hm(item.anchorTime) }}</span>
                         }
                         @if (item.isOverdue) {
                           <span class="text-[10.5px] font-semibold text-danger">Overdue</span>
@@ -219,7 +248,7 @@ import { ClockService } from '../../core/time/clock.service';
                   <div class="min-w-0 flex-1">
                     <b class="block text-[13.2px] font-medium">{{ due.title }}</b>
                     <div class="mt-0.5 flex items-center gap-2 text-[10.5px] text-muted">
-                      <span>{{ due.dueTime ? due.dueTime : 'All day' }}</span>
+                      <span>{{ due.dueTime ? hm(due.dueTime) : 'All day' }}</span>
                       <span>{{ due.priority }}</span>
                     </div>
                   </div>
@@ -305,28 +334,10 @@ export class HomePageComponent implements OnInit {
     const dateStr = day.date;
     const wasCompleted = item.isCompleted;
 
-    this.today.update((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        checklists: current.checklists.map((group) => ({
-          ...group,
-          items: group.items.map((i) => (i.itemId === item.itemId ? { ...i, isCompleted: !i.isCompleted } : i))
-        }))
-      };
-    });
+    this.today.update((current) => (current ? withItemCompleted(current, item.itemId, !wasCompleted) : current));
 
     const revert = () => {
-      this.today.update((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          checklists: current.checklists.map((group) => ({
-            ...group,
-            items: group.items.map((i) => (i.itemId === item.itemId ? { ...i, isCompleted: wasCompleted } : i))
-          }))
-        };
-      });
+      this.today.update((current) => (current ? withItemCompleted(current, item.itemId, wasCompleted) : current));
     };
 
     const request = wasCompleted
@@ -334,6 +345,11 @@ export class HomePageComponent implements OnInit {
       : this.checklistsApi.completeItem(item.itemId, { date: dateStr });
 
     request.subscribe({ error: revert });
+  }
+
+  /** The API sends TimeOnly values as HH:mm:ss; the page shows HH:mm like every other screen. */
+  protected hm(time: string | null): string {
+    return time ? time.slice(0, 5) : '';
   }
 
   private toMinutesSinceMidnight(time: string): number {

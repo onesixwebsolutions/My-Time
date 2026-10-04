@@ -69,8 +69,9 @@ if (string.Equals(databaseMode, "Embedded", StringComparison.OrdinalIgnoreCase))
             "Database:Mode is 'Embedded' but the app is running on Azure App Service. " +
             "Set the app setting Database__Mode=External and ConnectionStrings__Default.");
 
-    var dataDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DayGrid", "pgdata");
+    var dataDir = builder.Configuration["Database:EmbeddedDataDir"] is { Length: > 0 } configuredDir
+        ? configuredDir
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DayGrid", "pgdata");
     var schemaSqlPath = Path.Combine(AppContext.BaseDirectory, "db", "init.sql");
 
     (embeddedPg, connectionString) = await EmbeddedDatabase.StartAsync(dataDir, schemaSqlPath);
@@ -214,14 +215,23 @@ app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
     // Malformed request bodies/route values surface as BadHttpRequestException (thrown in
     // Development) — those are client errors, not 500s.
-    var badRequest = context.Features.Get<IExceptionHandlerFeature>()?.Error as BadHttpRequestException;
-    var status = badRequest?.StatusCode ?? StatusCodes.Status500InternalServerError;
+    var error = context.Features.Get<IExceptionHandlerFeature>()?.Error;
+    var badRequest = error as BadHttpRequestException;
+    // Values the database rejects (too long for a varchar, out of numeric(12,2) range, a NUL
+    // character, a dangling foreign key, a violated CHECK/unique constraint) are client errors too.
+    var dbStatus = DatabaseErrors.ToStatusCode(error);
+    var status = badRequest?.StatusCode ?? dbStatus ?? StatusCodes.Status500InternalServerError;
+    var isClientError = status < 500;
     context.Response.StatusCode = status;
     context.Response.ContentType = "application/problem+json";
     var problem = new
     {
-        type = badRequest is null ? "https://tools.ietf.org/html/rfc7231#section-6.6.1" : "https://tools.ietf.org/html/rfc7231#section-6.5.1",
-        title = badRequest is null ? "An unexpected error occurred." : "The request was invalid.",
+        type = !isClientError ? "https://tools.ietf.org/html/rfc7231#section-6.6.1"
+            : status == StatusCodes.Status409Conflict ? "https://tools.ietf.org/html/rfc7231#section-6.5.8"
+            : "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+        title = !isClientError ? "An unexpected error occurred."
+            : dbStatus is not null ? DatabaseErrors.Describe(error!)
+            : "The request was invalid.",
         status
     };
     await context.Response.WriteAsync(JsonSerializer.Serialize(problem));
@@ -270,6 +280,10 @@ app.MapHub<ScheduleHub>("/hubs/schedule");
 // by always falling back to index.html for any GET that isn't a real file or a mapped API/hub
 // route above. Harmless no-op in local dev, where the SPA is served separately by `ng serve`.
 app.UseStaticFiles();
+// Unknown /api/* URLs are API misses, not client-side routes: answer 404 instead of letting
+// the SPA fallback below return index.html with a 200 (which the Angular HttpClient would
+// then fail to parse as JSON).
+app.MapFallback("/api/{**path}", () => Results.NotFound());
 app.MapFallbackToFile("index.html");
 
 if (embeddedPg is not null)

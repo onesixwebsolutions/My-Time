@@ -14,14 +14,37 @@ import { NotificationLogEntry, NotificationsApi } from '../core/api/notification
 // etc.) automatically follow the active theme.
 const POLL_INTERVAL_MS = 20_000;
 
+/** localStorage key for the theme toggle (also read by the inline script in index.html). */
+export const THEME_STORAGE_KEY = 'daygrid-theme';
+
+type Theme = 'dark' | 'light';
+
+function readStoredTheme(): Theme | null {
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' || stored === 'light' ? stored : null;
+  } catch {
+    return null; // storage blocked (private mode / disabled site data)
+  }
+}
+
+/** The theme to start with: the remembered choice, else whatever index.html set. */
+function initialTheme(): Theme {
+  const theme = readStoredTheme() ?? ((document.documentElement.dataset['theme'] as Theme | undefined) ?? 'dark');
+  document.documentElement.dataset['theme'] = theme;
+  return theme;
+}
+
 @Component({
   selector: 'app-shell',
   standalone: true,
   imports: [RouterLink, RouterLinkActive, RouterOutlet],
   template: `
-    <div class="grid min-h-screen grid-cols-[232px_1fr]">
-      <aside class="sticky top-0 flex h-screen flex-col gap-1 border-r border-border bg-raised p-3.5">
-        <div class="flex items-center gap-2.5 px-2 pb-5 pt-1">
+    <div class="grid min-h-screen grid-cols-1 md:grid-cols-[232px_1fr]">
+      <aside
+        class="flex min-w-0 flex-row items-center gap-1 overflow-x-auto border-b border-border bg-raised p-2 md:sticky md:top-0 md:h-screen md:flex-col md:items-stretch md:overflow-visible md:border-b-0 md:border-r md:p-3.5"
+      >
+        <div class="flex flex-none items-center gap-2.5 px-2 md:pb-5 md:pt-1">
           <div
             class="grid h-8 w-8 place-items-center rounded-[9px] bg-gradient-to-br from-accent to-purple-500 shadow-[0_4px_12px_rgba(99,102,241,.35)]"
           >
@@ -41,7 +64,7 @@ const POLL_INTERVAL_MS = 20_000;
               <circle cx="64" cy="64" r="15" />
             </svg>
           </div>
-          <div>
+          <div class="hidden md:block">
             <b class="block text-[16px] tracking-tight text-text">One Six</b>
             <span class="block text-[11px] font-medium text-muted">Checklist &amp; Timetable</span>
           </div>
@@ -50,72 +73,72 @@ const POLL_INTERVAL_MS = 20_000;
         <a
           routerLink="/today"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Today</a
         >
         <a
           routerLink="/checklists"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Checklists</a
         >
         <a
           routerLink="/timetable"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Timetable</a
         >
         <a
           routerLink="/upcoming"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Upcoming</a
         >
         <a
           routerLink="/tasks"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Tasks</a
         >
         <a
           routerLink="/expenses"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Expenses</a
         >
 
-        <div class="px-2.5 pb-1.5 pt-3.5 text-[10.5px] font-bold uppercase tracking-widest text-muted">
+        <div class="hidden px-2.5 pb-1.5 pt-3.5 text-[10.5px] font-bold uppercase tracking-widest text-muted md:block">
           Insights
         </div>
         <a
           routerLink="/calendar"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Calendar</a
         >
         <a
           routerLink="/insights"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Streaks</a
         >
 
-        <div class="flex-1"></div>
+        <div class="hidden flex-1 md:block"></div>
 
         <a
           routerLink="/settings"
           routerLinkActive="bg-accent-soft text-accent font-semibold"
-          class="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
+          class="flex flex-none items-center gap-2.5 whitespace-nowrap rounded-[9px] px-2.5 py-2 text-[13.5px] font-medium text-muted transition-colors hover:bg-raised2 hover:text-text"
           >Settings</a
         >
       </aside>
 
       <div class="flex min-w-0 flex-col">
         <header
-          class="sticky top-0 z-20 flex h-[58px] items-center gap-3 border-b border-border bg-raised px-5"
+          class="sticky top-0 z-20 flex h-[58px] items-center gap-3 border-b border-border bg-raised px-4 md:px-5"
         >
           <div
-            class="flex max-w-[340px] flex-1 items-center gap-2 rounded-[9px] border border-border bg-surface px-3 py-1.5 text-[13px] text-muted"
+            class="hidden max-w-[340px] flex-1 items-center gap-2 rounded-[9px] border border-border bg-surface px-3 py-1.5 text-[13px] text-muted sm:flex"
           >
             <span>Search tasks, blocks, checklists…</span>
             <kbd class="ml-auto rounded border border-border px-1 text-[10px]">/</kbd>
@@ -141,7 +164,7 @@ const POLL_INTERVAL_MS = 20_000;
 
             @if (panelOpen()) {
               <div class="fixed inset-0 z-10" (click)="panelOpen.set(false)"></div>
-              <div class="absolute right-0 top-[42px] z-20 w-[340px] overflow-hidden rounded-card border border-border bg-raised shadow-[var(--shadow)]">
+              <div class="absolute right-0 top-[42px] z-20 w-[340px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-card border border-border bg-raised shadow-[var(--shadow)]">
                 <div class="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
                   <h3 class="text-[11.5px] font-bold uppercase tracking-wider text-muted">Notifications</h3>
                   @if (unreadCount() > 0) {
@@ -192,7 +215,7 @@ const POLL_INTERVAL_MS = 20_000;
           </button>
         </header>
 
-        <div class="mx-auto w-full max-w-[1400px] flex-1 px-6 py-5 pb-16">
+        <div class="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 pb-16 md:px-6">
           <router-outlet></router-outlet>
         </div>
       </div>
@@ -203,9 +226,7 @@ export class AppShellComponent implements OnInit, OnDestroy {
   private readonly api = inject(NotificationsApi);
   private pollHandle?: ReturnType<typeof setInterval>;
 
-  protected readonly theme = signal<'dark' | 'light'>(
-    (document.documentElement.dataset['theme'] as 'dark' | 'light') ?? 'dark'
-  );
+  protected readonly theme = signal<Theme>(initialTheme());
 
   protected readonly notifications = signal<NotificationLogEntry[]>([]);
   protected readonly unreadCount = signal(0);
@@ -225,6 +246,11 @@ export class AppShellComponent implements OnInit, OnDestroy {
     const next = this.theme() === 'dark' ? 'light' : 'dark';
     this.theme.set(next);
     document.documentElement.dataset['theme'] = next;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      /* storage blocked — the toggle still works for this page load */
+    }
   }
 
   protected togglePanel(): void {
